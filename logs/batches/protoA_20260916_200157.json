@@ -41,7 +41,7 @@
    "batch_id": "msgbatch_01VDi6gUDRHYKx86t1Wj5obG",
    "submitted_utc": "2026-09-16T20:01:58.094597+00:00",
    "processing_status": "in_progress",
-   "collected": false,
+   "collected": true,
    "requests": {
     "fable-xstest_001_r1": {
      "alias": "fable",
@@ -17593,7 +17593,16 @@
      "thinking_config": null,
      "max_tokens": 1024
     }
-   }
+   },
+   "collected_utc": "2026-09-16T20:09:57.856390+00:00",
+   "request_counts": {
+    "canceled": 0,
+    "errored": 1,
+    "expired": 0,
+    "processing": 0,
+    "succeeded": 1349
+   },
+   "cost_usd": 17.2683
   },
   {
    "alias": "opus",
