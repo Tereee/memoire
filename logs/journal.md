@@ -215,3 +215,22 @@ rapporté, en particulier pour le seuil `head_chars` et les refus partiels.
   `custom_id = <alias>-<prompt_id>` ; `condition = "xstest_baseline"`.
 - Température : transmise en Batch uniquement pour haiku (même liste
   blanche que `providers.py`), `decoding_policy` cohérent.
+
+---
+
+## 2026-09-16 — Protocole A : température retirée pour haiku, manifeste versionné
+
+**Température.** Les quatre modèles tournent en `api_default`,
+`temperature_sent: null` partout, haiku compris. Raison : avec haiku seul
+à température 0 et les trois autres au décodage par défaut, la variance
+inter-modèles sur les 3 répétitions ne serait pas comparable. La liste
+blanche de `providers.py` (haiku accepte encore le paramètre) reste en
+place pour le pilote ; `src/run_protocol_a.py` n'y a pas recours.
+`temperature_requested` continue de refléter la valeur de config (0.0),
+comme intention jamais transmise.
+
+**Manifeste.** Déplacé de `data/raw/` (ignoré par git) vers
+`logs/batches/<run_id>.json`, versionné et commité automatiquement par le
+script après chaque lot soumis et après chaque lot collecté. C'est le
+seul pointeur vers des lots payés ; il ne doit jamais se trouver dans un
+dossier ignoré.

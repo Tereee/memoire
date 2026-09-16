@@ -10,11 +10,13 @@ Aucun `fallbacks` : un blocage revient en stop_reason "refusal" (BRIEFING 6).
     python -m src.run_protocol_a --collect RUN_ID       # ecrit les resultats des lots termines
     python -m src.run_protocol_a --collect RUN_ID --wait
 
-Etat de la soumission : data/raw/<run_id>.batches.json (identifiants de lots,
-requetes, drapeau de collecte). Les lignes JSONL vont dans data/raw/<run_id>.jsonl,
-schema 1.0, via Runner._build_record (meme code que les appels synchrones).
+Etat de la soumission : logs/batches/<run_id>.json (identifiants de lots, requetes,
+drapeau de collecte), versionne et commite apres chaque lot soumis ou collecte.
+Les lignes JSONL vont dans data/raw/<run_id>.jsonl, schema 1.0, via
+Runner._build_record (meme code que les appels synchrones).
 
 Conventions propres au Batch, consignees au journal :
+  - aucune temperature transmise, pour les quatre modeles (decoding_policy api_default) ;
   - cost_usd au tarif Batch (x0.5) : c'est le prix reellement paye ;
   - timestamp_utc = ended_at du lot ; latency_s = duree du lot (created_at -> ended_at),
     la latence par requete n'etant pas observable ;
@@ -29,6 +31,7 @@ import argparse
 import csv
 import hashlib
 import json
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -81,9 +84,11 @@ def build_requests(alias: str, rows: list[dict]) -> list[dict]:
     """Requetes Batch d'un modele. Chaque entree porte les params API et un `meta`
     suffisant pour reconstruire la ligne JSONL sans relire le corpus."""
     spec = Runner._spec(alias)
-    temperature = float(CONFIG["run"]["temperature"])
-    temperature_sent = Runner._temperature_to_send(spec["id"], temperature)
-    decoding_policy = "explicit" if temperature_sent is not None else "api_default"
+    temperature = float(CONFIG["run"]["temperature"])   # intention de config, jamais transmise ici
+    # Protocole A : decodage par defaut de l'API pour les quatre modeles, haiku compris,
+    # sinon la variance inter-modeles n'est pas comparable (journal 2026-09-16).
+    temperature_sent = None
+    decoding_policy = "api_default"
 
     out = []
     for row in rows:
@@ -94,8 +99,6 @@ def build_requests(alias: str, rows: list[dict]) -> list[dict]:
                 "max_tokens": MAX_TOKENS,
                 "messages": [{"role": "user", "content": row["prompt"]}],
             }
-            if temperature_sent is not None:
-                params["temperature"] = temperature_sent   # transmis tel quel par le SDK en Batch
             out.append({
                 "custom_id": f"{alias}-{prompt_id}",
                 "params": params,
@@ -149,11 +152,28 @@ def check_cap(d: dict) -> None:
 
 # ----------------------------------------------------------------- manifest
 def manifest_path(run_id: str) -> Path:
-    return ROOT / "data" / "raw" / f"{run_id}.batches.json"
+    # Versionne (logs/ n'est pas ignore) : seul pointeur vers des lots payes.
+    return ROOT / "logs" / "batches" / f"{run_id}.json"
 
 
 def save_manifest(m: dict) -> None:
-    manifest_path(m["run_id"]).write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+    p = manifest_path(m["run_id"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def git_commit_manifest(run_id: str, message: str) -> None:
+    """Commite le manifeste. Non bloquant : un echec git ne doit pas interrompre un run paye."""
+    p = manifest_path(run_id)
+    rel = p.relative_to(ROOT).as_posix()
+    full = f"{message}\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n"
+    try:
+        subprocess.run(["git", "add", rel], cwd=ROOT, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", full], cwd=ROOT, check=True, capture_output=True)
+        print(f"    commit : {rel}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        detail = getattr(e, "stderr", b"") or b""
+        print(f"    [!] commit du manifeste echoue : {e} {detail.decode(errors='replace').strip()}")
 
 
 def load_manifest(run_id: str) -> dict:
@@ -184,6 +204,7 @@ def submit(runner: Runner, requests_by_model: dict[str, list[dict]], d: dict) ->
         })
         save_manifest(manifest)
         print(f"  soumis {alias:7} batch_id={batch.id}  requetes={len(reqs)}  statut={batch.processing_status}")
+        git_commit_manifest(runner.run_id, f"protocole A {runner.run_id} : lot {alias} soumis ({batch.id})")
     print(f"\nmanifeste : {manifest_path(runner.run_id)}")
     print(f"collecte  : python -m src.run_protocol_a --collect {runner.run_id} --wait")
     return manifest
@@ -249,6 +270,7 @@ def collect(runner: Runner, manifest: dict, wait: bool) -> None:
         b["cost_usd"] = round(runner.spent_usd - spent_before, 4)
         save_manifest(manifest)
         print(f"  {b['alias']:7} collecte : ok={n_ok} err={n_err} divergence={n_div}  cout={b['cost_usd']:.4f}$")
+        git_commit_manifest(manifest["run_id"], f"protocole A {manifest['run_id']} : lot {b['alias']} collecte")
     print(f"\nJSONL : {runner.path}")
     print(f"depense cumulee cette session : {runner.spent_usd:.4f}$")
 
