@@ -95,11 +95,24 @@ dispositif. A sert de ligne de base.
 `providers.py` compare le modèle **demandé** au modèle **effectivement
 servi** par l'API et lève un drapeau `model_divergence`.
 
-Raison : certaines requêtes envoyées à Fable sont redirigées vers Opus 5
-par un mécanisme de sauvegarde, et ce reroutage se déclenche précisément
-sur les sujets sensibles que le protocole A sollicite. Sans ce champ, des
-réponses produites par un modèle seraient attribuées à un autre, et toute
-comparaison inter-modèles serait silencieusement fausse.
+Raison : l'API propose un mécanisme de repli (paramètre `fallbacks`, en
+bêta) qui, lorsqu'un classificateur de sécurité bloque une requête
+adressée à Fable, la rejoue sur un autre modèle (Opus 5 par exemple) au
+sein du même appel. Ce mécanisme est **opt-in** : il n'est actif que si
+la requête le demande, et il est **rejeté par la Batch API**. Sans lui, un
+blocage revient en HTTP 200 avec `stop_reason: "refusal"` et
+`stop_details.category` (cyber, bio, reasoning_extraction, ou null),
+que le schéma JSONL capture dans `stop_details_category`. Ces
+déclenchements portent précisément sur les sujets sensibles que le
+protocole A sollicite. Sans le contrôle de divergence, des réponses
+produites par un modèle de repli seraient attribuées au modèle demandé,
+et toute comparaison inter-modèles serait silencieusement fausse.
+
+Conséquence pour le dispositif : le protocole A tourne **sans**
+`fallbacks`, en Batch API, et mesure le taux de refus catégorisé. Le taux
+de reroutage sera mesuré à part, plus tard, hors Batch, avec `fallbacks`
+activé. Le contrôle de divergence reste en place, inchangé, dans les deux
+régimes.
 
 Toute ligne `model_divergence: true` est écartée des comparaisons et
 comptabilisée à part. **Le taux de divergence par condition est lui-même
