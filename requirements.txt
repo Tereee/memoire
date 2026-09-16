@@ -1,0 +1,4 @@
+# Versions relevees le 2026-09-16 (Python 3.11.9). Epinglage strict, cf. BRIEFING §8.
+anthropic==1.6.0
+PyYAML==6.0.3
+pandas==2.3.3
