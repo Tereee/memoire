@@ -164,8 +164,49 @@ class Runner:
 
         latency = time.time() - t0
 
+        rec = self._build_record(
+            alias=alias, spec=spec, prompt_id=prompt_id, condition=condition,
+            user_prompt=user_prompt, system_prompt=system_prompt,
+            temperature=temperature, temperature_sent=temperature_sent,
+            decoding_policy=decoding_policy, thinking_config=thinking_config,
+            max_tokens=max_tokens, resp=resp, latency=latency, attempts=attempts, error=err,
+        )
+        self._write(rec)
+
+        if rec.model_divergence:
+            print(f"  [!] DIVERGENCE  demande={spec['id']}  servi={rec.model_served}")
+
+        return rec
+
+    # ----------------------------------------------------------------- record
+    def _build_record(
+        self,
+        *,
+        alias: str,
+        spec: dict,
+        prompt_id: str,
+        condition: str,
+        user_prompt: str,
+        system_prompt: str,
+        temperature: float,
+        temperature_sent: float | None,
+        decoding_policy: str,
+        thinking_config: str | None,
+        max_tokens: int,
+        resp,
+        latency: float,
+        attempts: int,
+        error: str | None,
+        price_factor: float = 1.0,
+    ) -> CallRecord:
+        """Construit la ligne JSONL a partir d'une reponse Message (ou d'une erreur).
+
+        Point unique pour le controle de divergence, thinking_present et
+        stop_details : utilise par call() (synchrone) et par les runs Batch
+        (src/run_protocol_a.py). price_factor=0.5 pour un resultat Batch.
+        """
         if resp is None:
-            rec = CallRecord(
+            return CallRecord(
                 schema_version=SCHEMA_VERSION,
                 run_id=self.run_id, call_id=uuid.uuid4().hex[:12],
                 timestamp_utc=datetime.now(timezone.utc).isoformat(),
@@ -180,17 +221,15 @@ class Runner:
                 user_prompt=user_prompt, response_text="", stop_reason=None,
                 stop_details_category=None,
                 input_tokens=0, output_tokens=0, cost_usd=0.0,
-                latency_s=round(latency, 3), attempts=attempts, error=err,
+                latency_s=round(latency, 3), attempts=attempts, error=error,
             )
-            self._write(rec)
-            return rec
 
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
         thinking_present = any(
             getattr(b, "type", "") in ("thinking", "redacted_thinking") for b in resp.content
         )
         tin, tout = resp.usage.input_tokens, resp.usage.output_tokens
-        cost = self._cost(spec, tin, tout)
+        cost = self._cost(spec, tin, tout) * price_factor
         self.spent_usd += cost
 
         # stop_details n'est renseigne que sur stop_reason == "refusal" (HTTP 200).
@@ -203,7 +242,7 @@ class Runner:
             served.startswith(spec["id"]) or spec["id"].startswith(served)
         )
 
-        rec = CallRecord(
+        return CallRecord(
             schema_version=SCHEMA_VERSION,
             run_id=self.run_id, call_id=uuid.uuid4().hex[:12],
             timestamp_utc=datetime.now(timezone.utc).isoformat(),
@@ -222,12 +261,6 @@ class Runner:
             input_tokens=tin, output_tokens=tout, cost_usd=round(cost, 6),
             latency_s=round(latency, 3), attempts=attempts, error=None,
         )
-        self._write(rec)
-
-        if divergence:
-            print(f"  [!] DIVERGENCE  demande={spec['id']}  servi={served}")
-
-        return rec
 
     def summary(self) -> dict:
         return {

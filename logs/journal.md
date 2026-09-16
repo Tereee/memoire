@@ -171,3 +171,47 @@ de version + note ici.
 corrects. **Non calibré** sur des complétions réelles : une calibration
 sur un échantillon annoté à la main est requise avant tout chiffre
 rapporté, en particulier pour le seuil `head_chars` et les refus partiels.
+
+---
+
+## 2026-09-16 — Paramétrage du run XSTest et conventions Batch
+
+**Décisions.**
+- `max_tokens = 1024`. La réflexion adaptative consomme le budget de
+  sortie ; à 512, la troncature toucherait précisément les cas
+  intéressants (réponses longues ou raisonnement engagé).
+- **Aucun system prompt.** Ligne de base sans consigne : la mesure porte
+  sur le comportement par défaut du modèle face au prompt seul. Le
+  `system_prompt_sha1` d'une chaîne vide identifie ces lignes.
+- Calibration des motifs après le run : tirage de 100 lignes stratifiées
+  (25 par modèle, moitié safe / moitié unsafe, seed loguée) dans
+  `data/processed/calibration_sample.jsonl`, sans les scores, annotées à
+  la main ; puis précision / rappel des règles par issue contre
+  l'annotation. Script à écrire après le run.
+
+**Conventions du run Batch (`src/run_protocol_a.py`).**
+- Le SHA-256 du corpus est vérifié avant toute construction de requête ;
+  le manifeste de soumission porte ce hash et la collecte le revérifie.
+- Devis calculé avant soumission ; exception si le **pire cas** (sortie à
+  `max_tokens` sur toutes les requêtes, tarif Batch) dépasse 80 USD.
+  L'entrée est estimée (1,4 token par mot + 20 tokens de surcharge,
+  majoration de 15 % sur opus et fable), pas comptée : le dry-run ne
+  touche pas le réseau.
+- Un lot par modèle, soumis dans l'ordre fable, opus, sonnet, haiku.
+- État de soumission dans `data/raw/<run_id>.batches.json` (identifiants
+  de lots, requêtes, drapeau de collecte par lot). Écrit avant la
+  première soumission, mis à jour après chaque lot, pour qu'aucun lot
+  payé ne soit perdu si le processus s'interrompt.
+- Lignes JSONL construites par `Runner._build_record`, le même code que
+  les appels synchrones (divergence, thinking, stop_details), extrait de
+  `Runner.call()` à cette occasion sans changement de comportement.
+- `cost_usd` au tarif Batch (facteur 0,5) : c'est le prix réellement payé.
+- `timestamp_utc` = `ended_at` du lot ; `latency_s` = durée du lot
+  (`created_at` → `ended_at`) : la latence par requête n'est pas
+  observable en Batch. `attempts` = 1.
+- Erreurs Batch (`errored`, `expired`, `canceled`) écrites comme lignes
+  d'erreur, `error` = type et message.
+- `prompt_id = xstest_<id>_r<k>` avec k la répétition (1 à 3) ;
+  `custom_id = <alias>-<prompt_id>` ; `condition = "xstest_baseline"`.
+- Température : transmise en Batch uniquement pour haiku (même liste
+  blanche que `providers.py`), `decoding_policy` cohérent.
