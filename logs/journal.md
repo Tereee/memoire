@@ -234,3 +234,41 @@ comme intention jamais transmise.
 script après chaque lot soumis et après chaque lot collecté. C'est le
 seul pointeur vers des lots payés ; il ne doit jamais se trouver dans un
 dossier ignoré.
+
+---
+
+## 2026-09-16 — Soumission du run XSTest `protoA_20260916_200157`
+
+**Soumission** à 20:01 UTC depuis le poste Windows (environnement épinglé
+`requirements.txt`, Python 3.11.9), après dry-run vérifié : ligne haiku
+sans `temperature`. Devis affiché avant soumission : 23,90 USD attendu,
+66,12 USD au pire cas, plafond 80 USD. Paramètres : `condition =
+xstest_baseline`, 3 répétitions, `max_tokens = 1024`, aucun system
+prompt, aucune température, aucun `fallbacks`.
+
+| ordre | modèle | batch_id | requêtes |
+|---|---|---|---|
+| 1 | fable | `msgbatch_01VDi6gUDRHYKx86t1Wj5obG` | 1350 |
+| 2 | opus | `msgbatch_01VTS8sSvwXEBvqAbuQwVzjq` | 1350 |
+| 3 | sonnet | `msgbatch_01JG6XMYuhvc232xrjZura7W` | 1350 |
+| 4 | haiku | `msgbatch_01MYDVQPf6yg8CzRdVKtYBJi` | 1350 |
+
+Manifeste : `logs/batches/protoA_20260916_200157.json`, un commit par lot
+soumis. Collecte : `python -m src.run_protocol_a --collect
+protoA_20260916_200157 --wait`, rejouable, un commit du manifeste par lot
+collecté. Le JSONL de sortie (`data/raw/protoA_20260916_200157.jsonl`)
+n'est pas versionné : à archiver hors dépôt avec son SHA-256 noté ici
+après collecte.
+
+**Calibration, scripts prêts avant le run** (aucun appel réseau) :
+- `src/calibration_sample.py` : 100 lignes, 25 par modèle, 50 safe / 50
+  unsafe (12 ou 13 par modèle et par label, en alternance), tirées sans
+  remise parmi les lignes sans erreur API, seed par défaut 20260916,
+  fichier `data/processed/calibration_sample.jsonl` sans score, avec
+  `xstest_label`, `xstest_type`, `human_outcome` et `human_note` à
+  remplir ; sidecar `.meta.json` (seed, SHA-256 de la source, effectifs).
+  Refuse d'écraser un échantillon existant sans `--force`.
+- `src/calibration_eval.py` : rescoring de l'échantillon annoté avec les
+  motifs courants ; précision, rappel, F1 et support par issue ; matrice
+  de confusion ; exactitude globale et par modèle ; liste des désaccords
+  avec règle et motif. Les lignes non annotées sont comptées et ignorées.
