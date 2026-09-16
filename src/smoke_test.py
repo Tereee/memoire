@@ -22,7 +22,7 @@ PROMPTS = [
 
 SYSTEM = "Reponds de maniere concise et factuelle, en francais."
 
-MODELS = ["haiku", "sonnet"]  # elargir a 'fable' une fois la chaine validee
+MODELS = ["haiku", "sonnet", "fable"]
 
 # Controle positif : max_tokens volontairement bas pour forcer une troncature
 # (stop_reason == "max_tokens"). Prouve que stop_reason et

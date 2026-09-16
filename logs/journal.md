@@ -64,3 +64,37 @@ susceptible de changer, pendant que le JSONL continuait d'enregistrer
   `"api_default"` sinon).
 - Le run d'intégration `run_20260916_191005` (poste Windows, avant ce
   renommage) n'est pas versé au corpus.
+
+---
+
+## 2026-09-16 — Schéma JSONL figé en version 1.0
+
+**Décision.** Le CallRecord porte désormais un champ `schema_version`
+(constante `SCHEMA_VERSION` dans `src/providers.py`), valant `"1.0"`.
+Toute évolution ultérieure du schéma se fait par incrément de cette
+valeur et par une note datée dans ce journal. Aucun renommage de champ
+n'est admis : un run antérieur doit rester lisible avec sa version.
+
+**Champs de la version 1.0** (ordre d'écriture) : `schema_version`,
+`run_id`, `call_id`, `timestamp_utc`, `prompt_id`, `condition`,
+`model_alias`, `model_requested`, `model_served`, `model_divergence`,
+`temperature_requested`, `temperature_sent`, `decoding_policy`,
+`thinking_config`, `thinking_present`, `max_tokens`, `system_prompt_sha1`,
+`user_prompt_sha1`, `user_prompt`, `response_text`, `stop_reason`,
+`stop_details_category`, `input_tokens`, `output_tokens`, `cost_usd`,
+`latency_s`, `attempts`, `error`.
+
+**Champs thinking.** `thinking_config` enregistre le paramètre `thinking`
+tel que transmis à l'API (JSON), `null` s'il est omis : la configuration
+par défaut de l'API est utilisée partout, donc `null` sur tous les runs
+actuels. `thinking_present` indique si la réponse contient au moins un
+bloc `thinking` ou `redacted_thinking`, ce qui trace le régime réel de
+raisonnement servi, modèle par modèle, indépendamment de ce qui a été
+demandé.
+
+**Contrôle rejouable.** `tests/test_stop_details.py` (unittest, hors
+réseau) vérifie que `stop_details_category` se remplit sur une réponse
+`refusal` et reste `null` sur une troncature.
+
+**Fins de ligne.** `.gitattributes` fixé à `* text=auto eol=lf` pour que
+le dépôt reste identique entre le poste Windows et le VPS Linux.

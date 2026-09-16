@@ -33,9 +33,14 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+# Version du schema JSONL. Toute evolution = increment + note dans logs/journal.md.
+SCHEMA_VERSION = "1.0"
+
+
 @dataclass
 class CallRecord:
     """Une ligne de data/raw/*.jsonl. Schema fige : ne pas renommer les champs."""
+    schema_version: str        # cf. SCHEMA_VERSION
     run_id: str
     call_id: str
     timestamp_utc: str
@@ -48,6 +53,8 @@ class CallRecord:
     temperature_requested: float    # valeur de config (intention), jamais garantie appliquee
     temperature_sent: float | None  # valeur transmise a l'API ; None = parametre omis
     decoding_policy: str            # 'explicit' = temperature_sent transmise ; 'api_default' = decodage par defaut de l'API
+    thinking_config: str | None     # parametre 'thinking' transmis (JSON) ; None = omis, defaut de l'API
+    thinking_present: bool          # True = la reponse contient au moins un bloc thinking / redacted_thinking
     max_tokens: int
     system_prompt_sha1: str
     user_prompt_sha1: str
@@ -133,6 +140,10 @@ class Runner:
             kwargs["extra_body"] = {"temperature": temperature_sent}
         if system_prompt:
             kwargs["system"] = system_prompt
+        # Config par defaut partout : 'thinking' n'est pas transmis, on logue None.
+        thinking_config = (
+            json.dumps(kwargs["thinking"], sort_keys=True) if "thinking" in kwargs else None
+        )
 
         t0 = time.time()
         attempts, err, resp = 0, None, None
@@ -155,12 +166,14 @@ class Runner:
 
         if resp is None:
             rec = CallRecord(
+                schema_version=SCHEMA_VERSION,
                 run_id=self.run_id, call_id=uuid.uuid4().hex[:12],
                 timestamp_utc=datetime.now(timezone.utc).isoformat(),
                 prompt_id=prompt_id, condition=condition, model_alias=alias,
                 model_requested=spec["id"], model_served="", model_divergence=False,
                 temperature_requested=temperature, temperature_sent=temperature_sent,
                 decoding_policy=decoding_policy,
+                thinking_config=thinking_config, thinking_present=False,
                 max_tokens=max_tokens,
                 system_prompt_sha1=self._sha1(system_prompt),
                 user_prompt_sha1=self._sha1(user_prompt),
@@ -173,6 +186,9 @@ class Runner:
             return rec
 
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        thinking_present = any(
+            getattr(b, "type", "") in ("thinking", "redacted_thinking") for b in resp.content
+        )
         tin, tout = resp.usage.input_tokens, resp.usage.output_tokens
         cost = self._cost(spec, tin, tout)
         self.spent_usd += cost
@@ -188,6 +204,7 @@ class Runner:
         )
 
         rec = CallRecord(
+            schema_version=SCHEMA_VERSION,
             run_id=self.run_id, call_id=uuid.uuid4().hex[:12],
             timestamp_utc=datetime.now(timezone.utc).isoformat(),
             prompt_id=prompt_id, condition=condition, model_alias=alias,
@@ -195,6 +212,7 @@ class Runner:
             model_divergence=divergence,
             temperature_requested=temperature, temperature_sent=temperature_sent,
             decoding_policy=decoding_policy,
+            thinking_config=thinking_config, thinking_present=thinking_present,
             max_tokens=max_tokens,
             system_prompt_sha1=self._sha1(system_prompt),
             user_prompt_sha1=self._sha1(user_prompt),
