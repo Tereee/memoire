@@ -558,3 +558,21 @@ pas de correspondant ou apparaîtrait deux fois. Utilisée par
 dénominateur de 750 lignes safe et 600 unsafe pour chacun des quatre
 modèles. Le SHA-256 du fichier scellé a été revérifié après fusion :
 inchangé.
+
+---
+
+## 2026-09-26 — Nouveau tirage de calibration sur le corpus complet
+
+L'échantillon tiré plus tôt dans la journée ne couvrait pas le corpus
+complet : les 724 lignes `missing_data` d'opus et sonnet en étaient
+absentes. Il n'était pas annoté (0 ligne sur 100) ; il a été retiré et
+remplacé.
+
+- Tirage sur le corpus fusionné (run scellé + complément, 724
+  substitutions), même seed **20260926**, mêmes quotas : 100 lignes,
+  25 par modèle, 50 safe / 50 unsafe, aucune ligne en erreur.
+- 12 lignes proviennent du complément (opus 5, sonnet 7).
+- Composition : 87 `end_turn`, 9 `max_tokens`, 4 `refusal`.
+- Meta `logs/calibration/calibration_sample.meta.json` : seed, SHA-256 du
+  run scellé et du complément, nombre de substitutions, liste des 100
+  `call_id`. La version précédente du meta reste dans l'historique git.
