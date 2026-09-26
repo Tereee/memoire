@@ -10,8 +10,10 @@ Aucun `fallbacks` : un blocage revient en stop_reason "refusal" (BRIEFING 6).
     python -m src.run_protocol_a --collect RUN_ID       # ecrit les resultats des lots termines
     python -m src.run_protocol_a --collect RUN_ID --wait
 
-Etat de la soumission : logs/batches/<run_id>.json (identifiants de lots, requetes,
-drapeau de collecte), versionne et commite apres chaque lot soumis ou collecte.
+Etat de la soumission : logs/batches/<run_id>.json, versionne et commite apres chaque
+lot soumis ou collecte. Format 2 (depuis le 2026-09-26) : batch_id, etat, compteurs,
+couts, horodatages et parametres du run, SANS les requetes, reconstruites a la collecte
+depuis le corpus hashe. Le format 1 (requetes embarquees) reste lu tel quel.
 Les lignes JSONL vont dans data/raw/<run_id>.jsonl, schema 1.0, via
 Runner._build_record (meme code que les appels synchrones).
 
@@ -80,9 +82,11 @@ def verify_corpus() -> list[dict]:
 
 
 # ---------------------------------------------------------------- requests
-def build_requests(alias: str, rows: list[dict]) -> list[dict]:
+def build_requests(alias: str, rows: list[dict], max_tokens: int = MAX_TOKENS, reps: int = REPS) -> list[dict]:
     """Requetes Batch d'un modele. Chaque entree porte les params API et un `meta`
-    suffisant pour reconstruire la ligne JSONL sans relire le corpus."""
+    suffisant pour construire la ligne JSONL. Deterministe : a corpus (hashe) et
+    parametres egaux, memes requetes -- c'est ce qui permet au manifeste format 2
+    de ne pas les embarquer."""
     spec = Runner._spec(alias)
     temperature = float(CONFIG["run"]["temperature"])   # intention de config, jamais transmise ici
     # Protocole A : decodage par defaut de l'API pour les quatre modeles, haiku compris,
@@ -92,11 +96,11 @@ def build_requests(alias: str, rows: list[dict]) -> list[dict]:
 
     out = []
     for row in rows:
-        for k in range(1, REPS + 1):
+        for k in range(1, reps + 1):
             prompt_id = f"xstest_{int(row['id']):03d}_r{k}"
             params = {
                 "model": spec["id"],
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": row["prompt"]}],
             }
             out.append({
@@ -107,7 +111,7 @@ def build_requests(alias: str, rows: list[dict]) -> list[dict]:
                     "xstest_id": int(row["id"]), "xstest_type": row["type"], "xstest_label": row["label"],
                     "temperature_requested": temperature, "temperature_sent": temperature_sent,
                     "decoding_policy": decoding_policy, "thinking_config": None,
-                    "max_tokens": MAX_TOKENS,
+                    "max_tokens": max_tokens,
                 },
             })
     return out
@@ -185,10 +189,16 @@ def load_manifest(run_id: str) -> dict:
 
 # ------------------------------------------------------------------- submit
 def submit(runner: Runner, requests_by_model: dict[str, list[dict]], d: dict) -> dict:
+    # Format 2 : les requetes ne sont pas embarquees. Elles sont reconstruites a la
+    # collecte depuis le corpus (SHA-256 verifie) et les `params` ci-dessous.
     manifest = {
+        "manifest_format": 2,
         "run_id": runner.run_id, "condition": CONDITION, "corpus_sha256": CORPUS_SHA256,
         "created_utc": datetime.now(timezone.utc).isoformat(), "devis": d,
-        "system_prompt": SYSTEM_PROMPT, "batches": [],
+        "system_prompt": SYSTEM_PROMPT,
+        "params": {"models": MODELS, "reps": REPS, "max_tokens": MAX_TOKENS,
+                   "temperature_sent": None, "fallbacks": None},
+        "batches": [],
     }
     save_manifest(manifest)   # ecrit avant la premiere soumission : rien ne se perd
     for alias in MODELS:
@@ -200,7 +210,7 @@ def submit(runner: Runner, requests_by_model: dict[str, list[dict]], d: dict) ->
             "alias": alias, "batch_id": batch.id,
             "submitted_utc": datetime.now(timezone.utc).isoformat(),
             "processing_status": batch.processing_status, "collected": False,
-            "requests": {r["custom_id"]: r["meta"] for r in reqs},
+            "n_requests": len(reqs),
         })
         save_manifest(manifest)
         print(f"  soumis {alias:7} batch_id={batch.id}  requetes={len(reqs)}  statut={batch.processing_status}")
@@ -219,6 +229,24 @@ def _error_string(result) -> str:
     if inner is not None:
         return f"{result.type}: {getattr(inner, 'type', '')}: {getattr(inner, 'message', '')}"
     return f"{result.type}: {err}"
+
+
+def request_metas(manifest: dict, b: dict, _cache: dict = {}) -> dict[str, dict]:
+    """custom_id -> meta d'un lot.
+
+    Format 1 (historique, ex. protoA_20260916_200157) : requetes embarquees, lues telles quelles.
+    Format 2 : reconstruites depuis le corpus (SHA-256 verifie) et manifest["params"] ;
+    le nombre de requetes reconstruites doit egaler b["n_requests"].
+    """
+    if "requests" in b:
+        return b["requests"]
+    if "rows" not in _cache:
+        _cache["rows"] = verify_corpus()
+    p = manifest["params"]
+    reqs = build_requests(b["alias"], _cache["rows"], max_tokens=p["max_tokens"], reps=p["reps"])
+    if len(reqs) != b["n_requests"]:
+        raise CorpusMismatch(f"{b['alias']} : {len(reqs)} requetes reconstruites, {b['n_requests']} soumises")
+    return {r["custom_id"]: r["meta"] for r in reqs}
 
 
 def collect(runner: Runner, manifest: dict, wait: bool) -> None:
@@ -243,11 +271,12 @@ def collect(runner: Runner, manifest: dict, wait: bool) -> None:
         stamp = batch.ended_at.isoformat() if batch.ended_at else datetime.now(timezone.utc).isoformat()
         duration = (batch.ended_at - batch.created_at).total_seconds() if batch.ended_at else 0.0
 
+        metas = request_metas(manifest, b)
         results = sorted(client.messages.batches.results(b["batch_id"]), key=lambda r: r.custom_id)
         n_ok = n_err = n_div = 0
         spent_before = runner.spent_usd
         for r in results:
-            meta = b["requests"][r.custom_id]
+            meta = metas[r.custom_id]
             ok = r.result.type == "succeeded"
             rec = runner._build_record(
                 alias=meta["alias"], spec=spec, prompt_id=meta["prompt_id"], condition=CONDITION,
@@ -265,6 +294,8 @@ def collect(runner: Runner, manifest: dict, wait: bool) -> None:
             n_err += not ok
             n_div += rec.model_divergence
         b["collected"] = True
+        b["processing_status"] = batch.processing_status
+        b["ended_utc"] = stamp
         b["collected_utc"] = datetime.now(timezone.utc).isoformat()
         b["request_counts"] = batch.request_counts.model_dump()
         b["cost_usd"] = round(runner.spent_usd - spent_before, 4)

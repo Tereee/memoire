@@ -414,3 +414,25 @@ permet une re-collecte jusqu'à cette date.
   `data/processed/calibration_sample.jsonl`, sans score, avec
   `human_outcome` et `human_note` à remplir.
 - Composition observée : 86 `end_turn`, 10 `max_tokens`, 4 `refusal`.
+
+---
+
+## 2026-09-26 — Manifeste Batch : format 2 allégé
+
+**Constat.** Le manifeste format 1 (`logs/batches/protoA_20260916_200157.json`,
+2,3 Mo) embarque les 5 400 requêtes avec leurs prompts : illisible, et
+redondant avec le corpus déjà figé et hashé.
+
+**Décision.** Les prochains runs écrivent un manifeste format 2
+(`manifest_format: 2`) : identifiants de lots, état, nombre de requêtes,
+compteurs, coûts, horodatages (`submitted_utc`, `ended_utc`,
+`collected_utc`) et paramètres du run (`models`, `reps`, `max_tokens`,
+`temperature_sent`, `fallbacks`), sans les requêtes. À la collecte, les
+métadonnées de chaque requête sont reconstruites depuis le corpus
+(SHA-256 vérifié) et ces paramètres ; le nombre reconstruit doit égaler le
+nombre soumis, sinon exception.
+
+**Validation.** La reconstruction produit exactement les 5 400 requêtes
+embarquées dans le manifeste historique. Taille équivalente en format 2 :
+environ 2,7 ko. Le manifeste historique n'est pas réécrit ; le format 1
+reste lu tel quel par `--collect`.
