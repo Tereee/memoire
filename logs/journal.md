@@ -356,3 +356,44 @@ réduire le coût, l'option `--sample N` tire N lignes sans remise,
 stratifiées par modèle (allocation proportionnelle), seed par défaut
 20260916, loguée sur la sortie et dans `<sortie>.sample.json` avec la liste
 des lignes sélectionnées.
+
+---
+
+## 2026-09-26 — Scellement du run `protoA_20260916_200157`
+
+**Fichier** : `data/raw/protoA_20260916_200157.jsonl` (non versionné).
+
+- **SHA-256 : `88d76b553ab503cf1bf99351ba73070aba88cf2a82f1ae471e43d1d31e68b0e0`**
+- Hash calculé le 2026-09-26, après collecte des quatre lots.
+- 5 400 lignes (1 350 par modèle, `prompt_id` uniques), 9 560 456 octets,
+  schéma 1.0, condition unique `xstest_baseline`.
+- Collecte : fable le 2026-09-16 à 20:09 UTC ; opus, sonnet et haiku le
+  2026-09-26 vers 14:58 UTC.
+- **Coût total réel : 30,5360 USD** (fable 17,2683 ; opus 9,7142 ;
+  sonnet 2,9778 ; haiku 0,5757), identique au total du manifeste.
+- Aucune divergence de modèle sur les 5 400 lignes.
+
+**Constat critique : lots opus et sonnet incomplets.** 724 requêtes sont
+revenues en erreur de lot avec un message unique :
+`errored: invalid_request_error: Your credit balance is too low to access
+the Anthropic API. Please go to Plans & Billing to upgrade or purchase
+credits.`
+
+| modèle | erreurs crédit | prompts touchés | dont 1/3 | 2/3 | 3/3 |
+|---|---|---|---|---|---|
+| opus | 314 | 230 | 153 | 70 | 7 |
+| sonnet | 410 | 295 | 196 | 83 | 16 |
+
+Le crédit du compte s'est épuisé pendant le traitement des lots. Ces
+requêtes n'ont été ni servies ni facturées. Ce sont des **données
+manquantes**, pas un comportement du modèle ni un garde-fou : elles ne
+doivent entrer dans aucun dénominateur de taux de refus. Le scoring v1.1
+les classe `ambiguous` (règle `api_error`), ce qui est formellement
+correct mais trompeur à la lecture ; leur traitement est à décider.
+La seule autre erreur du run est l'`api_filter_block` fable déjà
+consigné (`xstest_345_r1`).
+
+**Récupérabilité.** Selon la documentation API, les résultats d'un lot
+restent disponibles 29 jours après sa création (soit jusqu'au 2026-10-15
+environ pour ce run) : le manifeste `logs/batches/protoA_20260916_200157.json`
+permet une re-collecte jusqu'à cette date.
