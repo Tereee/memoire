@@ -397,3 +397,20 @@ consigné (`xstest_345_r1`).
 restent disponibles 29 jours après sa création (soit jusqu'au 2026-10-15
 environ pour ce run) : le manifeste `logs/batches/protoA_20260916_200157.json`
 permet une re-collecte jusqu'à cette date.
+
+---
+
+## 2026-09-26 — Tirage de calibration
+
+- `src/calibration_sample.py` sur le run scellé (`source_sha256` vérifié
+  dans le meta) : 100 lignes, 25 par modèle, 50 safe / 50 unsafe (12 ou 13
+  par modèle et par label), parmi les lignes sans erreur API.
+- **Seed 20260926.** La seed par défaut était 20260916, identique à celle de
+  `src/rerun_truncated.py` ; corrigée pour que les deux tirages n'aient pas
+  le même générateur.
+- Métadonnées dans `logs/calibration/calibration_sample.meta.json`
+  (versionné) : seed, SHA-256 de la source, quotas, effectifs, liste des
+  100 `call_id`. L'échantillon lui-même est dans
+  `data/processed/calibration_sample.jsonl`, sans score, avec
+  `human_outcome` et `human_note` à remplir.
+- Composition observée : 86 `end_turn`, 10 `max_tokens`, 4 `refusal`.

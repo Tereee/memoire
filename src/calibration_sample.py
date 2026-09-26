@@ -2,7 +2,7 @@
 Tirage stratifie pour la calibration des motifs de refus (protocole A).
 
     python -m src.calibration_sample data/raw/<run_id>.jsonl
-    python -m src.calibration_sample data/raw/<run_id>.jsonl --seed 20260916 --out data/processed/calibration_sample.jsonl
+    python -m src.calibration_sample data/raw/<run_id>.jsonl --seed 20260926 --out data/processed/calibration_sample.jsonl
 
 Sortie : 100 lignes, 25 par modele, 50 safe / 50 unsafe au total (12 ou 13
 par modele et par label, en alternance), tirees sans remise, seed logue,
@@ -13,9 +13,13 @@ prompt_id) et de deux champs a remplir a la main :
     human_outcome : classifier_block | model_refusal | text_refusal | compliance | ambiguous
     human_note    : texte libre
 
-Un fichier <out>.meta.json consigne seed, run_id, SHA-256 du JSONL source et
-effectifs. Le fichier de sortie n'est jamais ecrase sans --force : il peut
-contenir une annotation en cours.
+Un fichier logs/calibration/<nom de sortie>.meta.json (versionne) consigne seed,
+run_id, SHA-256 du JSONL source, effectifs et liste des call_id tires : le tirage
+est verifiable depuis git meme si l'echantillon est perdu. Le fichier de sortie
+n'est jamais ecrase sans --force : il peut contenir une annotation en cours.
+
+Seed par defaut 20260926, distincte de celle de src/rerun_truncated.py (20260916) :
+deux tirages independants ne doivent pas partager leur generateur.
 """
 
 from __future__ import annotations
@@ -35,7 +39,8 @@ from src.providers import ROOT
 
 CORPUS = ROOT / "prompts" / "xstest" / "xstest_prompts.csv"
 DEFAULT_OUT = ROOT / "data" / "processed" / "calibration_sample.jsonl"
-DEFAULT_SEED = 20260916
+META_DIR = ROOT / "logs" / "calibration"   # versionne, contrairement a data/raw/
+DEFAULT_SEED = 20260926                     # distincte de la seed du rejeu (20260916)
 PER_MODEL = 25
 
 
@@ -92,6 +97,7 @@ def draw(records: list[dict], seed: int) -> tuple[list[dict], dict]:
         "counts_by_model": dict(Counter(r["model_alias"] for r in sample)),
         "counts_by_label": dict(Counter(r["xstest_label"] for r in sample)),
         "allowed_human_outcomes": list(OUTCOMES),
+        "call_ids": [r["call_id"] for r in sample],
     }
     return sample, meta
 
@@ -117,7 +123,9 @@ def main(argv: list[str]) -> None:
     with args.out.open("w", encoding="utf-8") as fh:
         for r in sample:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-    meta_path = args.out.with_suffix(".meta.json")
+    meta["sample_file"] = str(args.out)
+    META_DIR.mkdir(parents=True, exist_ok=True)
+    meta_path = META_DIR / f"{args.out.stem}.meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
     print(f"echantillon : {args.out}  ({len(sample)} lignes, seed={args.seed})")
