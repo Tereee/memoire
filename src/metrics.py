@@ -31,7 +31,13 @@ la regle qui a tranche et la version des motifs, pour audit.
 Les lignes model_divergence == true sont scorees comme les autres : leur
 mise a l'ecart releve de l'analyse (BRIEFING §6), pas du scoring.
 
-    python -m src.metrics data/raw/run_XXX.jsonl [autre.jsonl ...]
+    python -m src.metrics data/raw/<run>.jsonl
+    python -m src.metrics data/raw/<run>.jsonl --complement data/raw/<run>_compl.jsonl
+
+Avec --complement, les lignes missing_data du run scelle sont remplacees en
+memoire par celles du complement (merge_with_complement), jamais sur disque.
+Sortie : tableaux safe / unsafe par modele, comptes et taux, prompts distincts
+pour classifier_block et api_filter_block, SHA-256 de chaque fichier lu.
 """
 
 from __future__ import annotations
@@ -144,40 +150,123 @@ def rates(outcomes: list[str]) -> tuple[dict[str, float | None], int]:
             denom)
 
 
-def score_file(path: Path, patterns: Patterns | None = None) -> list[dict]:
+def load_jsonl(path: Path) -> list[dict]:
+    with Path(path).open(encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def merge_with_complement(sealed: list[dict], complements: list[list[dict]],
+                          patterns: Patterns | None = None) -> tuple[list[dict], int]:
+    """Regle de substitution (journal 2026-09-26) : pour chaque (model_alias, prompt_id),
+    la ligne missing_data du run scelle est remplacee par la ligne du complement.
+
+    Le fichier scelle n'est jamais modifie : la fusion n'existe qu'en memoire.
+    Exceptions si une ligne de complement vise une ligne non missing_data, n'a pas de
+    correspondant, ou apparait deux fois. Retourne (lignes fusionnees, nb de substitutions).
+    """
+    patterns = patterns or Patterns()
+    key = lambda r: (r["model_alias"], r["prompt_id"])
+    repl: dict[tuple, dict] = {}
+    for comp in complements:
+        for r in comp:
+            if key(r) in repl:
+                raise ValueError(f"complement en double pour {key(r)}")
+            repl[key(r)] = r
+    out, used = [], set()
+    for r in sealed:
+        k = key(r)
+        if k in repl:
+            if score(r, patterns).outcome != "missing_data":
+                raise ValueError(f"le complement remplacerait une ligne non missing_data : {k}")
+            out.append(repl[k])
+            used.add(k)
+        else:
+            out.append(r)
+    orphans = set(repl) - used
+    if orphans:
+        raise ValueError(f"{len(orphans)} lignes de complement sans ligne missing_data correspondante, ex. {sorted(orphans)[:3]}")
+    return out, len(used)
+
+
+def _xstest_labels() -> dict[int, dict]:
+    import csv
+    with (ROOT / "prompts" / "xstest" / "xstest_prompts.csv").open(encoding="utf-8", newline="") as fh:
+        return {int(r["id"]): r for r in csv.DictReader(fh)}
+
+
+def score_records(records: list[dict], patterns: Patterns | None = None) -> list[dict]:
     patterns = patterns or Patterns()
     out = []
-    with Path(path).open(encoding="utf-8") as fh:
-        for line in fh:
-            if not line.strip():
-                continue
-            rec = json.loads(line)
-            row = {k: rec.get(k) for k in _KEY_FIELDS}
-            row.update(asdict(score(rec, patterns)))
-            out.append(row)
+    for rec in records:
+        row = {k: rec.get(k) for k in _KEY_FIELDS}
+        row.update(asdict(score(rec, patterns)))
+        out.append(row)
     return out
 
 
-def main(argv: list[str]) -> None:
-    if not argv:
-        print(__doc__)
-        sys.exit(2)
-    patterns = Patterns()
-    for p in argv:
-        rows = score_file(Path(p), patterns)
-        print(f"{p}  ({len(rows)} lignes, motifs v{patterns.version})")
-        by_model = Counter((r["model_alias"], r["outcome"]) for r in rows)
-        models = sorted({r["model_alias"] for r in rows})
-        print(f"  comptes, puis taux hors {sorted(EXCLUDED_FROM_RATES)}")
-        print(f"  {'model':8}" + "".join(f"{o:>17}" for o in OUTCOMES) + f"{'denominateur':>14}")
+def score_file(path: Path, patterns: Patterns | None = None) -> list[dict]:
+    return score_records(load_jsonl(path), patterns)
+
+
+def _print_table(rows: list[dict], models: list[str], title: str) -> None:
+    print(f"\n  {title} -- comptes (taux hors {sorted(EXCLUDED_FROM_RATES)})")
+    print(f"  {'issue':18}" + "".join(f"{m:>17}" for m in models))
+    per = {m: [r["outcome"] for r in rows if r["model_alias"] == m] for m in models}
+    rt = {m: rates(per[m]) for m in models}
+    for o in OUTCOMES:
+        cells = []
         for m in models:
-            print(f"  {m:8}" + "".join(f"{by_model[(m, o)]:>17}" for o in OUTCOMES))
-            r_, denom = rates([r["outcome"] for r in rows if r["model_alias"] == m])
-            print(f"  {'':8}" + "".join(f"{'-' if r_[o] is None else f'{r_[o]:.1%}':>17}" for o in OUTCOMES)
-                  + f"{denom:>14}")
-        amb = Counter(r["rule"] for r in rows if r["outcome"] == "ambiguous")
-        if amb:
-            print("  ambiguous par regle :", dict(amb))
+            c = sum(1 for x in per[m] if x == o)
+            pct = rt[m][0][o]
+            cells.append(f"{c:>8} {'   -  ' if pct is None else f'{pct:6.1%}'}")
+        print(f"  {o:18}" + "".join(f"{c:>17}" for c in cells))
+    print(f"  {'denominateur':18}" + "".join(f"{rt[m][1]:>17}" for m in models))
+
+
+def main(argv: list[str]) -> None:
+    import argparse
+    import hashlib
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("jsonl", type=Path, help="JSONL du run (scelle)")
+    ap.add_argument("--complement", type=Path, action="append", default=[],
+                    help="JSONL de run complementaire, fusionne en memoire par la regle de substitution")
+    args = ap.parse_args(argv)
+
+    patterns = Patterns()
+    for p in [args.jsonl, *args.complement]:
+        print(f"{p}  sha256={hashlib.sha256(p.read_bytes()).hexdigest()}")
+    records = load_jsonl(args.jsonl)
+    if args.complement:
+        records, n_sub = merge_with_complement(records, [load_jsonl(c) for c in args.complement], patterns)
+        print(f"substitutions : {n_sub} lignes missing_data remplacees par le complement")
+    rows = score_records(records, patterns)
+    labels = _xstest_labels()
+    for r in rows:
+        xid = int(r["prompt_id"].split("_")[1])
+        r["xstest_label"] = labels[xid]["label"]
+        r["xstest_base"] = f"xstest_{xid:03d}"
+    models = [m for m in ("fable", "opus", "sonnet", "haiku") if any(r["model_alias"] == m for r in rows)]
+    models += sorted({r["model_alias"] for r in rows} - set(models))
+    print(f"{len(rows)} lignes scorees, motifs v{patterns.version}")
+
+    for label in ("safe", "unsafe"):
+        _print_table([r for r in rows if r["xstest_label"] == label], models, label.upper())
+
+    n_prompts = {lab: sum(1 for v in labels.values() if v["label"] == lab) for lab in ("safe", "unsafe")}
+    print("\n  prompts DISTINCTS concernes (lignes entre parentheses)")
+    for o in ("classifier_block", "api_filter_block"):
+        for label in ("safe", "unsafe"):
+            cells = []
+            for m in models:
+                sel = [r for r in rows if r["model_alias"] == m and r["xstest_label"] == label and r["outcome"] == o]
+                cells.append(f"{len({r['xstest_base'] for r in sel})}/{n_prompts[label]} ({len(sel)})")
+            print(f"  {o:18}{label:7}" + "".join(f"{c:>17}" for c in cells))
+
+    amb = Counter((r["rule"], r["model_alias"]) for r in rows if r["outcome"] == "ambiguous")
+    if amb:
+        print("\n  ambiguous par regle")
+        for rule in sorted({k[0] for k in amb}):
+            print(f"  {rule:24}" + "".join(f"{amb[(rule, m)]:>10}" for m in models))
 
 
 if __name__ == "__main__":

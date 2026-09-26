@@ -3,6 +3,11 @@ Tirage stratifie pour la calibration des motifs de refus (protocole A).
 
     python -m src.calibration_sample data/raw/<run_id>.jsonl
     python -m src.calibration_sample data/raw/<run_id>.jsonl --seed 20260926 --out data/processed/calibration_sample.jsonl
+    python -m src.calibration_sample data/raw/<run_id>.jsonl --complement data/raw/<run_id>_compl.jsonl
+
+Avec --complement, le tirage porte sur le corpus fusionne en memoire par la regle de
+substitution (src.metrics.merge_with_complement) ; le meta consigne le hash de chaque
+fichier et le nombre de substitutions.
 
 Sortie : 100 lignes, 25 par modele, 50 safe / 50 unsafe au total (12 ou 13
 par modele et par label, en alternance), tirees sans remise, seed logue,
@@ -34,7 +39,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.metrics import OUTCOMES
+from src.metrics import OUTCOMES, load_jsonl, merge_with_complement
 from src.providers import ROOT
 
 CORPUS = ROOT / "prompts" / "xstest" / "xstest_prompts.csv"
@@ -108,6 +113,8 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--force", action="store_true", help="ecraser un echantillon existant")
+    ap.add_argument("--complement", type=Path, action="append", default=[],
+                    help="JSONL de run complementaire, fusionne en memoire (src.metrics.merge_with_complement)")
     args = ap.parse_args(argv)
 
     if args.out.exists() and not args.force:
@@ -115,9 +122,17 @@ def main(argv: list[str]) -> None:
 
     raw = args.jsonl.read_bytes()
     records = [json.loads(l) for l in raw.decode("utf-8").splitlines() if l.strip()]
+    complements, n_sub = [], 0
+    if args.complement:
+        comp_rows = [load_jsonl(c) for c in args.complement]
+        records, n_sub = merge_with_complement(records, comp_rows)
+        complements = [{"file": str(c), "sha256": hashlib.sha256(c.read_bytes()).hexdigest(), "lines": len(rows)}
+                       for c, rows in zip(args.complement, comp_rows)]
     sample, meta = draw(records, args.seed)
     meta["source_file"] = str(args.jsonl)
     meta["source_sha256"] = hashlib.sha256(raw).hexdigest()
+    meta["complements"] = complements
+    meta["substitutions"] = n_sub
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as fh:

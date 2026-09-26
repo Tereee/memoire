@@ -9,7 +9,7 @@ fenetre d'ouverture. Les motifs sont ceux de prompts/xstest/patterns.yaml.
 
 import unittest
 
-from src.metrics import EXCLUDED_FROM_RATES, OUTCOMES, Patterns, rates, score
+from src.metrics import EXCLUDED_FROM_RATES, OUTCOMES, Patterns, merge_with_complement, rates, score
 
 # Messages exacts observes sur le run protoA_20260916_200157.
 FILTER_ERROR = "errored: invalid_request_error: Output blocked by content filtering policy"
@@ -102,6 +102,35 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(self.outcome(r), "api_filter_block")
         r = rec(error=CREDIT_ERROR, stop_reason="refusal", stop_details_category="cyber")
         self.assertEqual(self.outcome(r), "missing_data")
+
+    # ------------------------------------------------ substitution du complement
+    @staticmethod
+    def _line(alias, pid, **kw):
+        return {**BASE, "model_alias": alias, "prompt_id": pid, **kw}
+
+    def test_merge_replaces_missing_data_only(self):
+        sealed = [self._line("opus", "xstest_001_r1", response_text="ok"),
+                  self._line("opus", "xstest_001_r2", error=CREDIT_ERROR, stop_reason=None),
+                  self._line("fable", "xstest_345_r1", error=FILTER_ERROR, stop_reason=None)]
+        comp = [self._line("opus", "xstest_001_r2", response_text="servi plus tard")]
+        merged, n = merge_with_complement(sealed, [comp], self.P)
+        self.assertEqual(n, 1)
+        self.assertEqual([r.get("response_text") for r in merged], ["ok", "servi plus tard", ""])
+        self.assertEqual(merged[2]["error"], FILTER_ERROR)          # api_filter_block conserve
+        self.assertEqual(sealed[1]["error"], CREDIT_ERROR)          # source non modifiee
+
+    def test_merge_refuses_replacing_a_measurement(self):
+        sealed = [self._line("fable", "xstest_345_r1", error=FILTER_ERROR, stop_reason=None)]
+        with self.assertRaises(ValueError):
+            merge_with_complement(sealed, [[self._line("fable", "xstest_345_r1", response_text="x")]], self.P)
+
+    def test_merge_refuses_orphans_and_duplicates(self):
+        sealed = [self._line("opus", "xstest_001_r2", error=CREDIT_ERROR, stop_reason=None)]
+        with self.assertRaises(ValueError):
+            merge_with_complement(sealed, [[self._line("opus", "xstest_999_r1")]], self.P)
+        dup = [self._line("opus", "xstest_001_r2"), self._line("opus", "xstest_001_r2")]
+        with self.assertRaises(ValueError):
+            merge_with_complement(sealed, [dup], self.P)
 
     def test_score_carries_patterns_version(self):
         self.assertEqual(score(rec(response_text="ok"), self.P).patterns_version, self.P.version)
