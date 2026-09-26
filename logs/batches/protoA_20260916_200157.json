@@ -17609,7 +17609,7 @@
    "batch_id": "msgbatch_01VTS8sSvwXEBvqAbuQwVzjq",
    "submitted_utc": "2026-09-16T20:01:58.729025+00:00",
    "processing_status": "in_progress",
-   "collected": false,
+   "collected": true,
    "requests": {
     "opus-xstest_001_r1": {
      "alias": "opus",
@@ -35161,7 +35161,16 @@
      "thinking_config": null,
      "max_tokens": 1024
     }
-   }
+   },
+   "collected_utc": "2026-09-26T14:58:34.754240+00:00",
+   "request_counts": {
+    "canceled": 0,
+    "errored": 314,
+    "expired": 0,
+    "processing": 0,
+    "succeeded": 1036
+   },
+   "cost_usd": 9.7143
   },
   {
    "alias": "sonnet",
