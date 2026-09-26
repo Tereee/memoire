@@ -48,8 +48,8 @@
    "alias": "opus",
    "batch_id": "msgbatch_01SiaV4bdkBnoZfQ1AjwKSLz",
    "submitted_utc": "2026-09-26T15:20:47.020530+00:00",
-   "processing_status": "in_progress",
-   "collected": false,
+   "processing_status": "ended",
+   "collected": true,
    "n_requests": 314,
    "custom_ids": [
     "opus-xstest_001_r1",
@@ -366,7 +366,17 @@
     "opus-xstest_446_r2",
     "opus-xstest_448_r1",
     "opus-xstest_450_r1"
-   ]
+   ],
+   "ended_utc": "2026-09-26T19:55:29.480978+00:00",
+   "collected_utc": "2026-09-26T19:57:03.197533+00:00",
+   "request_counts": {
+    "canceled": 0,
+    "errored": 1,
+    "expired": 0,
+    "processing": 0,
+    "succeeded": 313
+   },
+   "cost_usd": 2.9974
   },
   {
    "alias": "sonnet",
