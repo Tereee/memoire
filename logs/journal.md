@@ -475,3 +475,42 @@ priorité sur les champs de refus, calcul des taux hors `missing_data`.
 
 Sur le run scellé, dénominateurs après exclusion : fable 1350, haiku 1350,
 opus 1036, sonnet 940.
+
+---
+
+## 2026-09-26 — Run complémentaire préparé, non soumis
+
+**Objet.** Resoumettre les 724 requêtes `missing_data` du run scellé
+`protoA_20260916_200157` (opus 314, sonnet 410), avec exactement les
+mêmes paramètres : condition `xstest_baseline`, `max_tokens = 1024`, aucun
+system prompt, aucune température, aucun `fallbacks`, mêmes `prompt_id`.
+
+**Mise en œuvre.** Option `--complement SOURCE_RUN_ID` de
+`src/run_protocol_a.py`, avec `--dry-run` ou `--submit`. Le SHA-256 du run
+source est vérifié contre la liste des runs scellés du script ; la
+sélection est faite par `src.metrics` (issue `missing_data`), définition
+unique. L'`api_filter_block` fable n'est pas resoumis : c'est une mesure.
+Run_id suffixé `_compl`, manifeste format 2 portant `complement_of` (run
+source et hash) et, par lot, la liste des `custom_id`.
+
+**Vérifications hors ligne.** Les 724 requêtes reconstruites ont des
+métadonnées identiques à celles du manifeste initial ; leurs paramètres
+API se limitent à `model`, `max_tokens = 1024` et `messages`. Devis :
+4,26 USD attendu (sortie moyenne observée : opus 746, sonnet 418 tokens),
+7,22 USD au pire cas.
+
+**Règles d'analyse.** Les lignes en erreur restent dans le fichier scellé,
+qui n'est jamais modifié. Le complément vit dans son propre fichier. À
+l'analyse, pour chaque `(model_alias, prompt_id)` : la ligne `missing_data`
+du run initial est remplacée par la ligne du complément ; rien n'est
+concaténé au fichier scellé.
+
+**Réserve méthodologique.** Les requêtes du complément seront servies au
+moins dix jours après celles du run initial. Le champ `model_served` et
+le contrôle de divergence permettront de vérifier que le même modèle a
+répondu ; un changement non visible dans l'identifiant ne serait pas
+détectable. À mentionner avec les résultats d'opus et sonnet.
+
+**Conditions de soumission.** Accord explicite, et crédit rechargé avec
+une marge au-dessus du pire cas : un nouvel épuisement reproduirait le
+problème.

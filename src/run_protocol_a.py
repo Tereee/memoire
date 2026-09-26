@@ -39,10 +39,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.metrics import Patterns, score
 from src.providers import CONFIG, ROOT, Runner
 
 CORPUS = ROOT / "prompts" / "xstest" / "xstest_prompts.csv"
 CORPUS_SHA256 = "11783fb294ed017473ee53c207d71f2161c7672c8d0b037501e78387f801cb5a"
+
+# Runs scelles (hash consigne au journal) pouvant servir de source a un run complementaire.
+SEALED_RUNS = {
+    "protoA_20260916_200157": "88d76b553ab503cf1bf99351ba73070aba88cf2a82f1ae471e43d1d31e68b0e0",
+}
 
 MODELS = ["fable", "opus", "sonnet", "haiku"]   # ordre de soumission
 REPS = 3
@@ -118,7 +124,9 @@ def build_requests(alias: str, rows: list[dict], max_tokens: int = MAX_TOKENS, r
 
 
 # ------------------------------------------------------------------- devis
-def devis(requests_by_model: dict[str, list[dict]]) -> dict:
+def devis(requests_by_model: dict[str, list[dict]], mean_output: dict[str, float] | None = None,
+          mean_output_label: str = "sortie moyenne du pilote") -> dict:
+    mean_output = mean_output or PILOT_MEAN_OUTPUT
     total_worst = total_expected = 0.0
     lines = {}
     for alias, reqs in requests_by_model.items():
@@ -127,13 +135,14 @@ def devis(requests_by_model: dict[str, list[dict]]) -> dict:
         tin = (TOKENS_PER_WORD * words + REQUEST_OVERHEAD_TOKENS) * TOKENIZER_FACTOR.get(alias, 1.0)
         n = len(reqs)
         worst = n * Runner._cost(spec, tin, MAX_TOKENS) * BATCH_PRICE_FACTOR
-        expected = n * Runner._cost(spec, tin, PILOT_MEAN_OUTPUT[alias]) * BATCH_PRICE_FACTOR
-        lines[alias] = {"requests": n, "in_per_call": round(tin), "expected_usd": round(expected, 2),
-                        "worst_usd": round(worst, 2)}
+        expected = n * Runner._cost(spec, tin, mean_output[alias]) * BATCH_PRICE_FACTOR
+        lines[alias] = {"requests": n, "in_per_call": round(tin), "out_expected": round(mean_output[alias]),
+                        "expected_usd": round(expected, 2), "worst_usd": round(worst, 2)}
         total_worst += worst
         total_expected += expected
     return {"models": lines, "total_expected_usd": round(total_expected, 2),
-            "total_worst_usd": round(total_worst, 2), "cap_usd": DEVIS_CAP_USD}
+            "total_worst_usd": round(total_worst, 2), "cap_usd": DEVIS_CAP_USD,
+            "expected_basis": mean_output_label}
 
 
 def print_devis(d: dict) -> None:
@@ -143,7 +152,8 @@ def print_devis(d: dict) -> None:
         print(f"  {alias:7}{l['requests']:>9}{l['in_per_call']:>10}{l['expected_usd']:>9.2f}${l['worst_usd']:>9.2f}$")
     n_total = sum(l["requests"] for l in d["models"].values())
     print(f"  {'TOTAL':7}{n_total:>9}{'':>10}{d['total_expected_usd']:>9.2f}${d['total_worst_usd']:>9.2f}$")
-    print(f"  attendu = sortie moyenne du pilote ; pire cas = sortie a max_tokens={MAX_TOKENS} partout")
+    outs = ", ".join(f"{a} {l['out_expected']}" for a, l in d["models"].items())
+    print(f"  attendu = {d['expected_basis']} ({outs} tokens) ; pire cas = sortie a max_tokens={MAX_TOKENS} partout")
     print(f"  plafond : {d['cap_usd']:.2f}$ sur le pire cas")
 
 
@@ -187,31 +197,68 @@ def load_manifest(run_id: str) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+# --------------------------------------------------------------- complement
+def load_sealed(source_run_id: str) -> list[dict]:
+    """Lignes d'un run scelle, apres verification de son SHA-256 contre SEALED_RUNS."""
+    if source_run_id not in SEALED_RUNS:
+        raise CorpusMismatch(f"{source_run_id} n'est pas un run scelle (SEALED_RUNS)")
+    path = ROOT / "data" / "raw" / f"{source_run_id}.jsonl"
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != SEALED_RUNS[source_run_id]:
+        raise CorpusMismatch(f"SHA-256 de {path.name} inattendu : {digest}")
+    print(f"source OK : {path.name}  sha256={digest[:16]}...")
+    return [json.loads(l) for l in raw.decode("utf-8").splitlines() if l.strip()]
+
+
+def missing_custom_ids(source_rows: list[dict]) -> set[str]:
+    """custom_id des lignes scorees missing_data par src.metrics (definition unique).
+    api_filter_block n'en fait pas partie : c'est une mesure, pas une donnee manquante."""
+    p = Patterns()
+    return {f"{r['model_alias']}-{r['prompt_id']}" for r in source_rows if score(r, p).outcome == "missing_data"}
+
+
+def observed_mean_output(source_rows: list[dict]) -> dict[str, float]:
+    """Sortie moyenne par modele sur les lignes servies du run source (base du devis attendu)."""
+    out = {}
+    for alias in MODELS:
+        served = [r["output_tokens"] for r in source_rows if r["model_alias"] == alias and not r["error"]]
+        out[alias] = sum(served) / len(served) if served else PILOT_MEAN_OUTPUT[alias]
+    return out
+
+
 # ------------------------------------------------------------------- submit
-def submit(runner: Runner, requests_by_model: dict[str, list[dict]], d: dict) -> dict:
+def submit(runner: Runner, requests_by_model: dict[str, list[dict]], d: dict,
+           complement_of: dict | None = None) -> dict:
     # Format 2 : les requetes ne sont pas embarquees. Elles sont reconstruites a la
-    # collecte depuis le corpus (SHA-256 verifie) et les `params` ci-dessous.
+    # collecte depuis le corpus (SHA-256 verifie) et les `params` ci-dessous. Pour un
+    # run complementaire, chaque lot porte en plus la liste de ses custom_id.
+    models = [a for a in MODELS if requests_by_model.get(a)]
     manifest = {
         "manifest_format": 2,
         "run_id": runner.run_id, "condition": CONDITION, "corpus_sha256": CORPUS_SHA256,
         "created_utc": datetime.now(timezone.utc).isoformat(), "devis": d,
         "system_prompt": SYSTEM_PROMPT,
-        "params": {"models": MODELS, "reps": REPS, "max_tokens": MAX_TOKENS,
+        "params": {"models": models, "reps": REPS, "max_tokens": MAX_TOKENS,
                    "temperature_sent": None, "fallbacks": None},
+        "complement_of": complement_of,
         "batches": [],
     }
     save_manifest(manifest)   # ecrit avant la premiere soumission : rien ne se perd
-    for alias in MODELS:
+    for alias in models:
         reqs = requests_by_model[alias]
         batch = runner.client.messages.batches.create(
             requests=[{"custom_id": r["custom_id"], "params": r["params"]} for r in reqs]
         )
-        manifest["batches"].append({
+        entry = {
             "alias": alias, "batch_id": batch.id,
             "submitted_utc": datetime.now(timezone.utc).isoformat(),
             "processing_status": batch.processing_status, "collected": False,
             "n_requests": len(reqs),
-        })
+        }
+        if complement_of:
+            entry["custom_ids"] = [r["custom_id"] for r in reqs]
+        manifest["batches"].append(entry)
         save_manifest(manifest)
         print(f"  soumis {alias:7} batch_id={batch.id}  requetes={len(reqs)}  statut={batch.processing_status}")
         git_commit_manifest(runner.run_id, f"protocole A {runner.run_id} : lot {alias} soumis ({batch.id})")
@@ -235,8 +282,9 @@ def request_metas(manifest: dict, b: dict, _cache: dict = {}) -> dict[str, dict]
     """custom_id -> meta d'un lot.
 
     Format 1 (historique, ex. protoA_20260916_200157) : requetes embarquees, lues telles quelles.
-    Format 2 : reconstruites depuis le corpus (SHA-256 verifie) et manifest["params"] ;
-    le nombre de requetes reconstruites doit egaler b["n_requests"].
+    Format 2 : reconstruites depuis le corpus (SHA-256 verifie) et manifest["params"],
+    restreintes a b["custom_ids"] pour un run complementaire ; le nombre de requetes
+    reconstruites doit egaler b["n_requests"].
     """
     if "requests" in b:
         return b["requests"]
@@ -244,6 +292,9 @@ def request_metas(manifest: dict, b: dict, _cache: dict = {}) -> dict[str, dict]
         _cache["rows"] = verify_corpus()
     p = manifest["params"]
     reqs = build_requests(b["alias"], _cache["rows"], max_tokens=p["max_tokens"], reps=p["reps"])
+    if "custom_ids" in b:
+        keep = set(b["custom_ids"])
+        reqs = [r for r in reqs if r["custom_id"] in keep]
     if len(reqs) != b["n_requests"]:
         raise CorpusMismatch(f"{b['alias']} : {len(reqs)} requetes reconstruites, {b['n_requests']} soumises")
     return {r["custom_id"]: r["meta"] for r in reqs}
@@ -314,7 +365,11 @@ def main(argv: list[str]) -> None:
     g.add_argument("--submit", action="store_true", help="soumet un lot Batch par modele")
     g.add_argument("--collect", metavar="RUN_ID", help="ecrit les resultats des lots termines")
     ap.add_argument("--wait", action="store_true", help="avec --collect : attendre la fin des lots")
+    ap.add_argument("--complement", metavar="SOURCE_RUN_ID",
+                    help="avec --dry-run / --submit : ne resoumettre que les lignes missing_data d'un run scelle")
     args = ap.parse_args(argv)
+    if args.complement and args.collect:
+        ap.error("--complement s'utilise avec --dry-run ou --submit ; la collecte lit le manifeste")
 
     if args.collect:
         manifest = load_manifest(args.collect)
@@ -326,10 +381,26 @@ def main(argv: list[str]) -> None:
 
     rows = verify_corpus()
     requests_by_model = {alias: build_requests(alias, rows) for alias in MODELS}
-    d = devis(requests_by_model)
+    complement_of = None
+    if args.complement:
+        source = load_sealed(args.complement)
+        missing = missing_custom_ids(source)
+        requests_by_model = {a: [r for r in reqs if r["custom_id"] in missing] for a, reqs in requests_by_model.items()}
+        requests_by_model = {a: reqs for a, reqs in requests_by_model.items() if reqs}
+        n_sel = sum(len(v) for v in requests_by_model.values())
+        if n_sel != len(missing):
+            raise CorpusMismatch(f"{len(missing)} lignes missing_data, {n_sel} requetes reconstruites")
+        complement_of = {"run_id": args.complement, "sha256": SEALED_RUNS[args.complement],
+                         "selection": f"missing_data (src.metrics v{Patterns().version})", "n_requests": n_sel}
+        print(f"complement de {args.complement} : {n_sel} requetes missing_data "
+              f"({', '.join(f'{a} {len(v)}' for a, v in requests_by_model.items())})")
+        d = devis(requests_by_model, observed_mean_output(source), f"sortie moyenne observee sur {args.complement}")
+    else:
+        d = devis(requests_by_model)
 
+    models = [a for a in MODELS if a in requests_by_model]
     print(f"\ncondition={CONDITION}  reps={REPS}  max_tokens={MAX_TOKENS}  system_prompt={SYSTEM_PROMPT!r}")
-    for alias in MODELS:
+    for alias in models:
         first = requests_by_model[alias][0]
         shown = {"custom_id": first["custom_id"], "params": first["params"]}
         print(f"  {alias:7} {len(requests_by_model[alias])} requetes, premiere : {json.dumps(shown, ensure_ascii=False)}")
@@ -340,9 +411,10 @@ def main(argv: list[str]) -> None:
         print("\n--dry-run : rien n'a ete soumis.")
         return
 
-    runner = Runner(run_id=datetime.now(timezone.utc).strftime("protoA_%Y%m%d_%H%M%S"))
-    print(f"\nrun_id = {runner.run_id}\nsoumission dans l'ordre {MODELS} :")
-    submit(runner, requests_by_model, d)
+    suffix = "_compl" if complement_of else ""
+    runner = Runner(run_id=datetime.now(timezone.utc).strftime(f"protoA_%Y%m%d_%H%M%S{suffix}"))
+    print(f"\nrun_id = {runner.run_id}\nsoumission dans l'ordre {models} :")
+    submit(runner, requests_by_model, d, complement_of=complement_of)
 
 
 if __name__ == "__main__":
