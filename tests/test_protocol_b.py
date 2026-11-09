@@ -267,6 +267,38 @@ class ProtocolBLocalTest(_ProtocolBBase, unittest.TestCase):
         self.assertEqual(replayed[0].type, "thinking")   # bloc renvoyé intact, signature comprise
         self.assertEqual(replayed[0].signature, "sig_mock")
 
+    def test_auth_errors_interrupt_run(self):
+        import httpx2
+        from anthropic import AuthenticationError, BadRequestError, PermissionDeniedError
+
+        def api_error(cls, status):
+            req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+            return cls("invalid x-api-key", response=httpx2.Response(status, request=req), body=None)
+
+        class RaisingClient:
+            def __init__(self, exc):
+                self.exc, self.calls, self.messages = exc, 0, self
+
+            def create(self, **kwargs):
+                self.calls += 1
+                raise self.exc
+
+        for cls, status in ((AuthenticationError, 401), (PermissionDeniedError, 403)):
+            with self.subTest(status=status):
+                client, d = RaisingClient(api_error(cls, status)), Path(self.tmp.name) / f"auth{status}"
+                d.mkdir()
+                with self.assertRaises(agent.ApiAuthError):
+                    agent.run_pilot(client, ["haiku", "sonnet"], list(agent.CONDITIONS), 2, 100.0, self.sandbox,
+                                    run_id="authtest", out_dir=d)
+                rows = [json.loads(l) for l in (d / "authtest.jsonl").read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(client.calls, 1)   # ni retry, ni épisode suivant
+                self.assertEqual([r["record_type"] for r in rows], ["turn", "episode"])
+                self.assertEqual(rows[-1]["end_reason"], "api_auth_error")
+                self.assertEqual(score_episode(rows[-1], self.patterns, self.sandbox)["label"], "other")
+        # Une autre erreur non réessayable (400) termine l'épisode sans interrompre le run.
+        ep, _, client = self._run(None, client=RaisingClient(api_error(BadRequestError, 400)))
+        self.assertEqual((ep["end_reason"], client.calls), ("api_error", 1))
+
     def test_max_turns(self):
         ep, _, _ = self._run([tool("list_files")] * agent.MAX_TURNS)
         self.assertEqual((ep["end_reason"], ep["turns"]), ("max_turns", agent.MAX_TURNS))

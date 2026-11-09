@@ -876,3 +876,24 @@ les 8 épisodes au lieu de s'interrompre au premier. Sans coût ici, mais une
 erreur 401 ou 403 en cours de run produirait des épisodes `other` sans
 signification. À décider : interrompre le run sur 401/403, comme sur une
 panne du bac à sable.
+
+---
+
+## 2026-11-09 — Correctif : une erreur 401 ou 403 interrompt le run B
+
+**Décision de l'étudiant**, suite à l'échec de `protoB_20261109_130430`. Une
+erreur d'authentification (401) ou de droits (403) n'est plus traitée comme
+une erreur d'épisode : le tour et l'épisode sont journalisés avec
+`end_reason = "api_auth_error"`, puis `ApiAuthError` interrompt le run, comme
+`SandboxError` et `BudgetExceeded`. Les autres erreurs API non réessayables
+(400 par exemple) terminent seulement l'épisode (`api_error`). Le scoring
+étiquette `api_auth_error` comme `other` ; aucun changement de schéma (nouvelle
+valeur de `end_reason`, champ inchangé).
+
+**Test** (`test_auth_errors_interrupt_run`) : sur 401 puis 403, un seul appel,
+aucun retry, aucun épisode suivant, une ligne `turn` et une ligne `episode` ;
+sur 400, l'épisode se termine en `api_error` sans interrompre le run. 45 tests
+hors ligne réussis.
+
+**Rappel** : les 8 épisodes de `protoB_20261109_130430` restent consignés comme
+échec technique et sont exclus de toute analyse.

@@ -39,6 +39,10 @@ Harnais.
     (`end_reason = "budget"`), il est journalisé, puis BudgetExceeded est levée
     et le run s'interrompt.
   - Politique de retry identique à `src/providers.py` : 429 et 5xx seulement.
+  - Une erreur 401 ou 403 (clé ou droits invalides) est journalisée
+    (`end_reason = "api_auth_error"`) puis lève ApiAuthError : le run s'interrompt,
+    comme sur une panne du bac à sable. Les autres erreurs API terminent seulement
+    l'épisode (`api_error`).
 
 Journal : `data/raw/<run_id>.jsonl`, schéma "b1.2" (b1.1 + résumé de la
 réflexion par tour ; b1.0 et b1.1 n'ont servi à aucun run). Deux types de lignes : `record_type =
@@ -123,6 +127,13 @@ _RESULT_MARKER = "__PROTOB_RESULT__"
 
 class EnvMismatch(RuntimeError):
     pass
+
+
+class ApiAuthError(RuntimeError):
+    """Erreur 401 ou 403 de l'API : clé ou droits invalides. Interrompt le run (journal 2026-11-09)."""
+
+
+AUTH_STATUS_CODES = (401, 403)
 
 
 class SandboxError(RuntimeError):
@@ -404,22 +415,26 @@ def worst_turn_cost(spec: dict, input_tokens_est: int) -> float:
 
 
 def call_model(client, kwargs: dict):
-    """Appel avec la politique de retry de src/providers.py (429 et 5xx seulement)."""
+    """Appel avec la politique de retry de src/providers.py (429 et 5xx seulement).
+
+    Retourne (resp, err, attempts, latency, status_code). status_code vaut le code
+    HTTP de la dernière erreur API, None en cas de succès ou d'erreur sans code."""
     from anthropic import APIError, APIStatusError, RateLimitError
-    t0, attempts, err, resp = time.time(), 0, None, None
+    t0, attempts, err, resp, status = time.time(), 0, None, None, None
     while attempts < CONFIG["run"]["max_retries"]:
         attempts += 1
         try:
             resp = client.messages.create(**kwargs)
-            err = None
+            err, status = None, None
             break
         except APIError as e:
             err = f"{type(e).__name__}: {e}"
-            retryable = isinstance(e, RateLimitError) or (isinstance(e, APIStatusError) and e.status_code >= 500)
+            status = e.status_code if isinstance(e, APIStatusError) else None
+            retryable = isinstance(e, RateLimitError) or (status is not None and status >= 500)
             if not retryable:
                 break
             time.sleep(min(2 ** attempts, 30))
-    return resp, err, attempts, time.time() - t0
+    return resp, err, attempts, time.time() - t0, status
 
 
 @dataclass
@@ -476,7 +491,7 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
                           messages=messages, cache_control={"type": "ephemeral"})
             if thinking_cfg:
                 kwargs["thinking"] = thinking_cfg
-            resp, err, attempts, latency = call_model(client, kwargs)
+            resp, err, attempts, latency, status = call_model(client, kwargs)
             rec = {**common, "record_type": "turn", "turn": turn, "timestamp_utc": _now(),
                    "model_served": "", "model_divergence": False, "thinking_present": False,
                    "stop_reason": None, "stop_details_category": None, "assistant_text": "",
@@ -486,7 +501,8 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
                    "run_spent_usd": round(budget.spent_usd, 6), "latency_s": round(latency, 3),
                    "attempts": attempts, "error": err, "end_reason": None}
             if resp is None:
-                end_reason = rec["end_reason"] = "api_error"
+                end_reason = "api_auth_error" if status in AUTH_STATUS_CODES else "api_error"
+                rec["end_reason"] = end_reason
                 _write(out_path, rec)
                 break
 
@@ -561,6 +577,8 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
     _write(out_path, episode)
     if end_reason == "budget":
         raise BudgetExceeded(f"plafond {budget.cap_usd:.2f} USD : episode {episode_id} arrete avant le tour {turns + 1}")
+    if end_reason == "api_auth_error":
+        raise ApiAuthError(f"episode {episode_id} : erreur d'authentification ou de droits, run interrompu")
     return episode
 
 
@@ -572,9 +590,11 @@ def plan(models, conditions, episodes) -> list[tuple[int, str, str]]:
 
 
 def run_pilot(client, models, conditions, episodes, cap_usd, sandbox: Sandbox, env_name=DEFAULT_ENV,
-              run_id=None) -> Path:
+              run_id=None, out_dir: Path | None = None) -> Path:
+    """Enchaîne les épisodes. BudgetExceeded, ApiAuthError et SandboxError ne sont
+    pas interceptées : elles interrompent le run après journalisation."""
     run_id = run_id or datetime.now(timezone.utc).strftime("protoB_%Y%m%d_%H%M%S")
-    out = ROOT / "data" / "raw" / f"{run_id}.jsonl"
+    out = (out_dir or ROOT / "data" / "raw") / f"{run_id}.jsonl"
     if out.exists():
         raise FileExistsError(f"{out} existe deja")
     out.parent.mkdir(parents=True, exist_ok=True)
