@@ -40,8 +40,8 @@ Harnais.
     et le run s'interrompt.
   - Politique de retry identique à `src/providers.py` : 429 et 5xx seulement.
 
-Journal : `data/raw/<run_id>.jsonl`, schéma "b1.1" (b1.0 + champs du bac à
-sable ; b1.0 n'a servi à aucun run). Deux types de lignes : `record_type =
+Journal : `data/raw/<run_id>.jsonl`, schéma "b1.2" (b1.1 + résumé de la
+réflexion par tour ; b1.0 et b1.1 n'ont servi à aucun run). Deux types de lignes : `record_type =
 "turn"` (un par tour) et `record_type = "episode"` (une par épisode, avec
 l'état final complet de l'espace de travail pour le scoring). Champs
 documentés dans logs/journal.md.
@@ -65,8 +65,8 @@ from pathlib import Path
 
 from src.providers import CONFIG, ROOT, BudgetExceeded, Runner
 
-SCHEMA_VERSION_B = "b1.1"
-READABLE_SCHEMAS_B = ("b1.0", "b1.1")
+SCHEMA_VERSION_B = "b1.2"
+READABLE_SCHEMAS_B = ("b1.0", "b1.1", "b1.2")
 
 ENVS = {
     "impossible_v1": {"sha256": "16ccf32339b1602a5cafa7531d5b855cdec20ab4a7666b9e762e7c95d38bcf94",
@@ -81,6 +81,11 @@ DEFAULT_ENV = "impossible_v2"
 PROMPTS_DIR = ROOT / "prompts" / "protocol_b"
 CONDITIONS = ("neutral", "explicit_no_test_edit")
 PILOT_MODELS = ("sonnet", "haiku")
+
+# Paramètre `thinking` transmis par modèle. Sonnet 5 raisonne par défaut (adaptatif) mais
+# renvoie des blocs vides (display "omitted") : "summarized" n'en change que la visibilité,
+# pas le raisonnement ni la facturation. Haiku 4.5 ne raisonne pas par défaut : rien n'est envoyé.
+THINKING_BY_MODEL = {"sonnet": {"type": "adaptive", "display": "summarized"}}
 
 MAX_TURNS = 15
 MAX_TOKENS = 4096
@@ -439,13 +444,15 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
     env_sha = verify_env(env_name)
     spec = Runner._spec(alias)
     pr = load_prompts(condition)
+    thinking_cfg = THINKING_BY_MODEL.get(alias)
     episode_id = f"{run_id}_e{episode_index:03d}"
     common = {
         "schema_version": SCHEMA_VERSION_B, "run_id": run_id, "episode_id": episode_id,
         "episode_index": episode_index, "env_name": env_name, "env_sha256": env_sha,
         **sandbox.describe(),
         "condition": condition, "model_alias": alias, "model_requested": spec["id"],
-        "decoding_policy": "api_default", "temperature_sent": None, "thinking_config": None,
+        "decoding_policy": "api_default", "temperature_sent": None,
+        "thinking_config": json.dumps(thinking_cfg, sort_keys=True) if thinking_cfg else None,
         "max_tokens": MAX_TOKENS, "max_turns": MAX_TURNS,
         "system_prompt_id": pr["system_prompt_id"], "system_prompt_sha1": pr["system_prompt_sha1"],
         "task_prompt_id": pr["task_prompt_id"], "task_prompt_sha1": pr["task_prompt_sha1"],
@@ -467,10 +474,13 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
             kwargs = dict(model=spec["id"], max_tokens=MAX_TOKENS, system=system_param, tools=pr["tools"],
                           tool_choice={"type": "auto", "disable_parallel_tool_use": True},
                           messages=messages, cache_control={"type": "ephemeral"})
+            if thinking_cfg:
+                kwargs["thinking"] = thinking_cfg
             resp, err, attempts, latency = call_model(client, kwargs)
             rec = {**common, "record_type": "turn", "turn": turn, "timestamp_utc": _now(),
                    "model_served": "", "model_divergence": False, "thinking_present": False,
                    "stop_reason": None, "stop_details_category": None, "assistant_text": "",
+                   "thinking_summary": None, "thinking_blocks": 0, "redacted_thinking_blocks": 0,
                    "tool_calls": [], "tool_results": [], "input_tokens": 0, "output_tokens": 0,
                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": 0.0,
                    "run_spent_usd": round(budget.spent_usd, 6), "latency_s": round(latency, 3),
@@ -497,6 +507,10 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
             rec.update({
                 "model_served": model_served, "model_divergence": divergence,
                 "thinking_present": any(getattr(b, "type", "") in ("thinking", "redacted_thinking") for b in resp.content),
+                "thinking_summary": "\n\n".join(b.thinking for b in resp.content
+                                                 if getattr(b, "type", "") == "thinking" and b.thinking) or None,
+                "thinking_blocks": sum(1 for b in resp.content if getattr(b, "type", "") == "thinking"),
+                "redacted_thinking_blocks": sum(1 for b in resp.content if getattr(b, "type", "") == "redacted_thinking"),
                 "stop_reason": resp.stop_reason,
                 "stop_details_category": getattr(stop_details, "category", None) if stop_details else None,
                 "assistant_text": "".join(b.text for b in resp.content if getattr(b, "type", "") == "text"),

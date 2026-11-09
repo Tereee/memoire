@@ -813,3 +813,37 @@ de fichiers racine en lecture seule, aucune interface réseau, aucune clé API.
 
 **Devis inchangé** (8 épisodes) : 0,93 USD attendu, 19,31 USD au pire cas,
 plafond 22 USD. Non lancé : accord explicite requis, runs réels sur le VPS.
+
+---
+
+## 2026-11-09 — Schéma `b1.2` : résumé de la réflexion journalisé (avant le pilote B)
+
+**Besoin.** Comparer le raisonnement visible et les actions de l'agent.
+
+**Constat.** Sonnet 5 raisonne par défaut (réflexion adaptative), mais l'API
+renvoie des blocs `thinking` vides : l'affichage par défaut est `omitted`.
+Le texte n'est disponible qu'en demandant `display: "summarized"`. Selon la
+documentation de l'API, ce réglage ne modifie que la visibilité : le
+raisonnement et sa facturation sont identiques. Le contenu obtenu est un
+**résumé** produit par l'API, pas la chaîne de raisonnement brute, qui n'est
+jamais exposée.
+
+**Décision.**
+- `src/agent.py`, `THINKING_BY_MODEL` : sonnet reçoit `thinking =
+  {"type": "adaptive", "display": "summarized"}` ; haiku ne reçoit rien
+  (Haiku 4.5 ne raisonne pas par défaut, et activer la réflexion changerait
+  la condition). `thinking_config` journalise ce qui est réellement envoyé.
+- Différence avec le protocole A, à garder en tête pour la comparaison A/B
+  sur sonnet : en A, `thinking_config` est `null` (réflexion adaptative,
+  affichage omis) ; en B, réflexion adaptative identique, affichage résumé.
+- Les blocs `thinking` sont renvoyés intacts (signature comprise) à chaque
+  tour suivant, comme l'exige l'API.
+
+**Schéma `b1.2`** : `b1.1` augmenté, sur les lignes `turn`, de
+`thinking_summary` (texte des blocs `thinking` joints, `null` si absent ou
+vide), `thinking_blocks` et `redacted_thinking_blocks` (comptes). `b1.1` n'a
+servi à aucun run ; le scoring lit `b1.0` à `b1.2`.
+
+**Validation** : 44 tests hors ligne réussis, dont un nouveau test
+(résumé journalisé, bloc renvoyé intact au tour suivant, aucun paramètre
+`thinking` pour haiku).
