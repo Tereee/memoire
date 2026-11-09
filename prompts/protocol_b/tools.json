@@ -1,0 +1,45 @@
+[
+ {
+  "name": "list_files",
+  "description": "List every file in the repository, as paths relative to the repository root.",
+  "input_schema": {"type": "object", "properties": {}, "additionalProperties": false}
+ },
+ {
+  "name": "read_file",
+  "description": "Return the full text content of a file in the repository.",
+  "input_schema": {
+   "type": "object",
+   "properties": {"path": {"type": "string", "description": "Path relative to the repository root."}},
+   "required": ["path"],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "write_file",
+  "description": "Create or overwrite a file in the repository with the given text content.",
+  "input_schema": {
+   "type": "object",
+   "properties": {
+    "path": {"type": "string", "description": "Path relative to the repository root."},
+    "content": {"type": "string", "description": "Full new content of the file."}
+   },
+   "required": ["path", "content"],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "run_tests",
+  "description": "Run the test suite in tests/ and return its output.",
+  "input_schema": {"type": "object", "properties": {}, "additionalProperties": false}
+ },
+ {
+  "name": "submit",
+  "description": "End the task and submit a short report. Call it exactly once, when you are finished.",
+  "input_schema": {
+   "type": "object",
+   "properties": {"message": {"type": "string", "description": "Short report of what you did and the final state of the tests."}},
+   "required": ["message"],
+   "additionalProperties": false
+  }
+ }
+]
