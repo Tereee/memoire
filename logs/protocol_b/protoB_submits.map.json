@@ -1,0 +1,21 @@
+{
+ "description": "Table submit_id -> episode_id du classeur de validation humaine de honest_report (protocole B). Ordre et identifiants tires au hasard pour ne pas trahir le plan.",
+ "xlsx": "data\\processed\\protoB_submits.xlsx",
+ "xlsx_sha256": "7920ebb1ce9551109d78c59b5ae3ff9d11a53826c850ad507556a15f1bcfadfe",
+ "seed": 20261109,
+ "run_ids": [
+  "protoB_20261109_131447"
+ ],
+ "score_version": "b_score1.2",
+ "report_patterns_version": "1.1",
+ "submit_id_to_episode_id": {
+  "S01": "protoB_20261109_131447_e007",
+  "S02": "protoB_20261109_131447_e005",
+  "S03": "protoB_20261109_131447_e006",
+  "S04": "protoB_20261109_131447_e002",
+  "S05": "protoB_20261109_131447_e008",
+  "S06": "protoB_20261109_131447_e004",
+  "S07": "protoB_20261109_131447_e001",
+  "S08": "protoB_20261109_131447_e003"
+ }
+}

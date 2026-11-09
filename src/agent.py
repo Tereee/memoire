@@ -83,13 +83,14 @@ ENVS = {
 DEFAULT_ENV = "impossible_v2"
 
 PROMPTS_DIR = ROOT / "prompts" / "protocol_b"
-CONDITIONS = ("neutral", "explicit_no_test_edit")
+CONDITIONS = ("neutral", "explicit_no_test_edit", "pressure")
 PILOT_MODELS = ("sonnet", "haiku")
 
-# Paramètre `thinking` transmis par modèle. Sonnet 5 raisonne par défaut (adaptatif) mais
-# renvoie des blocs vides (display "omitted") : "summarized" n'en change que la visibilité,
+# Paramètre `thinking` transmis par modèle. Sonnet 5 et Fable raisonnent par défaut (adaptatif)
+# mais renvoient des blocs vides (display "omitted") : "summarized" n'en change que la visibilité,
 # pas le raisonnement ni la facturation. Haiku 4.5 ne raisonne pas par défaut : rien n'est envoyé.
-THINKING_BY_MODEL = {"sonnet": {"type": "adaptive", "display": "summarized"}}
+THINKING_BY_MODEL = {"sonnet": {"type": "adaptive", "display": "summarized"},
+                     "fable": {"type": "adaptive", "display": "summarized"}}
 
 MAX_TURNS = 15
 MAX_TOKENS = 4096
@@ -388,7 +389,12 @@ def load_prompts(condition: str) -> dict:
     if condition not in CONDITIONS:
         raise ValueError(f"condition inconnue : {condition!r}")
     read = lambda name: _normalized((PROMPTS_DIR / name).read_bytes()).decode("utf-8").strip()
-    system, task, tools_raw = read(f"{condition}.md"), read("task.md"), read("tools.json")
+    # Les conditions sont en .md, sauf `pressure`, nommée pressure.txt par l'étudiant.
+    candidates = [f"{condition}.md", f"{condition}.txt"]
+    found = [c for c in candidates if (PROMPTS_DIR / c).is_file()]
+    if len(found) != 1:
+        raise FileNotFoundError(f"condition {condition} : un seul fichier attendu parmi {candidates}, trouves {found}")
+    system, task, tools_raw = read(found[0]), read("task.md"), read("tools.json")
     return {"system": system, "task": task, "tools": json.loads(tools_raw),
             "system_prompt_id": f"protocol_b/{condition}", "system_prompt_sha1": _sha1(system),
             "task_prompt_id": "protocol_b/task", "task_prompt_sha1": _sha1(task),
@@ -651,6 +657,58 @@ def print_devis(d: dict, cap: float) -> None:
     print(f"  plafond dur : {cap:.2f}$")
 
 
+# Modèles sans donnée pilote : estimés depuis un modèle mesuré, au rapport des tarifs
+# (valable si le rapport est identique en entrée et en sortie), avec une marge haute
+# pour un tokenizer différent (jusqu'à ~1,35 fois plus de tokens).
+CALIBRATION_PROXY = {"fable": "sonnet", "opus": "sonnet"}
+TOKENIZER_MARGIN = 1.35
+
+
+def calibrated_devis(path: Path, counts: dict[str, int]) -> dict:
+    """Estimation par modèle à partir des coûts d'épisodes réellement observés dans `path`."""
+    raw = Path(path).read_bytes()
+    eps = [json.loads(l) for l in raw.decode("utf-8").splitlines() if l.strip()]
+    eps = [e for e in eps if e.get("record_type") == "episode" and e.get("end_reason") not in ("api_error", "api_auth_error")]
+    costs: dict[str, list[float]] = {}
+    for e in eps:
+        costs.setdefault(e["model_alias"], []).append(e["cost_usd"])
+    rows = {}
+    for alias, n in counts.items():
+        if alias in costs:
+            c, factor, margin, basis = costs[alias], 1.0, 1.0, f"{alias}, {len(costs[alias])} episodes pilote"
+        else:
+            proxy = CALIBRATION_PROXY.get(alias)
+            if proxy not in costs:
+                rows[alias] = None
+                continue
+            s, p = Runner._spec(alias), Runner._spec(proxy)
+            r_in, r_out = s["input_per_mtok"] / p["input_per_mtok"], s["output_per_mtok"] / p["output_per_mtok"]
+            if abs(r_in - r_out) > 1e-9:
+                rows[alias] = None
+                continue
+            c, factor, margin = costs[proxy], r_in, TOKENIZER_MARGIN
+            basis = f"extrapole de {proxy} x{r_in:.2f} (tarifs), borne haute x{margin} (tokenizer)"
+        mean, mx = sum(c) / len(c) * factor, max(c) * factor * margin
+        rows[alias] = {"episodes": n, "mean_per_episode": mean, "max_per_episode": mx,
+                       "expected_usd": mean * n, "high_usd": mx * n, "basis": basis}
+    return {"source": str(path), "source_sha256": hashlib.sha256(raw).hexdigest(), "rows": rows}
+
+
+def print_calibrated(c: dict) -> None:
+    print(f"\nestimation calibree sur {Path(c['source']).name} (sha256 {c['source_sha256'][:16]}...)")
+    print(f"  {'modele':7}{'episodes':>9}{'moy/ep':>9}{'max/ep':>9}{'attendu':>10}{'haut':>9}  base")
+    for alias, r in c["rows"].items():
+        if r is None:
+            print(f"  {alias:7}  aucune donnee pilote ni modele de reference")
+            continue
+        print(f"  {alias:7}{r['episodes']:>9}{r['mean_per_episode']:>8.3f}${r['max_per_episode']:>8.3f}$"
+              f"{r['expected_usd']:>9.2f}${r['high_usd']:>8.2f}$  {r['basis']}")
+    tot = [r for r in c["rows"].values() if r]
+    print(f"  {'TOTAL':7}{sum(r['episodes'] for r in tot):>9}{'':>18}{sum(r['expected_usd'] for r in tot):>9.2f}$"
+          f"{sum(r['high_usd'] for r in tot):>8.2f}$")
+    print("  attendu = cout moyen par episode observe ; haut = cout maximal observe par episode, sur tous les episodes")
+
+
 def main(argv: list[str]) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run", action="store_true", help="executer (appels API). Sans ce drapeau : devis seul.")
@@ -659,6 +717,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--conditions", nargs="+", default=list(CONDITIONS), choices=CONDITIONS)
     ap.add_argument("--episodes", type=int, default=2, help="episodes par modele et par condition")
     ap.add_argument("--cap", type=float, default=BUDGET_CAP_USD, help="plafond dur du run, en USD")
+    ap.add_argument("--calibrate-from", type=Path, help="JSONL b1.x d'un run precedent : estimation sur couts observes")
     args = ap.parse_args(argv)
 
     print(f"environnement {args.env} : sha256 {verify_env(args.env)[:16]}... verifie")
@@ -667,6 +726,9 @@ def main(argv: list[str]) -> None:
           f"{MAX_TURNS} tours max, max_tokens {MAX_TOKENS}, bac a sable docker ({DOCKER_IMAGE})")
     d = devis(args.models, args.conditions, args.episodes)
     print_devis(d, args.cap)
+    if args.calibrate_from:
+        print_calibrated(calibrated_devis(args.calibrate_from,
+                                          {m: args.episodes * len(args.conditions) for m in args.models}))
     if d["total_worst_usd"] > args.cap:
         print("  [!] le pire cas depasse le plafond : le run s'arreterait sur BudgetExceeded avant de le franchir")
     if not args.run:
