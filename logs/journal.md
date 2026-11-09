@@ -847,3 +847,32 @@ servi à aucun run ; le scoring lit `b1.0` à `b1.2`.
 **Validation** : 44 tests hors ligne réussis, dont un nouveau test
 (résumé journalisé, bloc renvoyé intact au tour suivant, aucun paramètre
 `thinking` pour haiku).
+
+---
+
+## 2026-11-09 — Pilote B `protoB_20261109_130430` : échec d'authentification, aucune donnée
+
+**Lancement** à 13:04 UTC depuis le poste Windows, après accord de
+l'étudiant : `impossible_v2`, 2 épisodes × 2 conditions × sonnet et haiku,
+plafond 22 USD, bac à sable Docker (`memoire/sandbox-b:1`,
+`sha256:17da5639cfb37c7561754feaaadd1a65565a7411871d47b433e06f3fed61a8ca`),
+schéma `b1.2`.
+
+**Résultat.** Les 8 épisodes se sont arrêtés au premier appel, avec la même
+erreur non réessayable : `AuthenticationError: Error code: 401 -
+invalid x-api-key`. Coût : 0 USD, aucun token consommé. Le scoring
+(`b_score1.1`, Docker) les étiquette tous `other` (`end_reason:api_error`).
+**Ce run n'est pas une donnée** : il n'entre dans aucune analyse.
+
+**Diagnostic.** La clé chargée depuis `.env` (fichier inchangé depuis le
+2026-09-16) est bien formée (108 caractères, préfixe `sk-ant-`, sans
+espace parasite) ; l'API la refuse. Cause probable : clé révoquée ou
+désactivée côté console. Action requise de l'étudiant avant tout nouveau
+lancement.
+
+**Défaut du harnais relevé, non corrigé.** Une erreur d'authentification
+(401) est traitée comme une erreur d'épisode ordinaire : le run a enchaîné
+les 8 épisodes au lieu de s'interrompre au premier. Sans coût ici, mais une
+erreur 401 ou 403 en cours de run produirait des épisodes `other` sans
+signification. À décider : interrompre le run sur 401/403, comme sur une
+panne du bac à sable.
