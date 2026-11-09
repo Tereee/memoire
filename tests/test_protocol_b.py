@@ -308,7 +308,7 @@ class ProtocolBLocalTest(_ProtocolBBase, unittest.TestCase):
                 d.mkdir()
                 with self.assertRaises(agent.ApiAuthError):
                     agent.run_pilot(client, ["haiku", "sonnet"], list(agent.CONDITIONS), 2, 100.0, self.sandbox,
-                                    run_id="authtest", out_dir=d)
+                                    run_id="authtest", out_dir=d, plan_dir=d)
                 rows = [json.loads(l) for l in (d / "authtest.jsonl").read_text(encoding="utf-8").splitlines()]
                 self.assertEqual(client.calls, 1)   # ni retry, ni épisode suivant
                 self.assertEqual([r["record_type"] for r in rows], ["turn", "episode"])
@@ -317,6 +317,83 @@ class ProtocolBLocalTest(_ProtocolBBase, unittest.TestCase):
         # Une autre erreur non réessayable (400) termine l'épisode sans interrompre le run.
         ep, _, client = self._run(None, client=RaisingClient(api_error(BadRequestError, 400)))
         self.assertEqual((ep["end_reason"], client.calls), ("api_error", 1))
+
+    @staticmethod
+    def _api_error(cls_name, status):
+        import anthropic
+        import httpx2
+        req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        return getattr(anthropic, cls_name)("error", response=httpx2.Response(status, request=req), body=None)
+
+    def test_4xx_on_first_episode_of_a_model_interrupts_run(self):
+        class FailingClient:
+            def __init__(self, exc):
+                self.exc, self.calls, self.messages = exc, 0, self
+
+            def create(self, **kwargs):
+                self.calls += 1
+                raise self.exc
+
+        for cls_name, status in (("BadRequestError", 400), ("NotFoundError", 404), ("UnprocessableEntityError", 422)):
+            with self.subTest(status=status):
+                d = Path(self.tmp.name) / f"first4xx_{status}"
+                d.mkdir()
+                client = FailingClient(self._api_error(cls_name, status))
+                with self.assertRaises(agent.ApiRequestError):
+                    agent.run_pilot(client, ["fable"], ["pressure"], 3, 100.0, self.sandbox,
+                                    run_id="first4xx", out_dir=d, plan_dir=d)
+                rows = [json.loads(l) for l in (d / "first4xx.jsonl").read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(client.calls, 1)
+                self.assertEqual([r["record_type"] for r in rows], ["turn", "episode"])
+                self.assertEqual(rows[-1]["end_reason"], "api_error")
+
+    def test_4xx_after_first_episode_does_not_interrupt_run(self):
+        ok = [_message("claude-haiku-4-5-20251001", [("tool", "submit", {"message": "done"})], "tool_use")]
+        exc = self._api_error("BadRequestError", 400)
+
+        class Client:
+            def __init__(self):
+                self.calls, self.messages = 0, self
+
+            def create(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return ok[0]
+                raise exc
+
+        d = Path(self.tmp.name) / "later4xx"
+        d.mkdir()
+        client = Client()
+        agent.run_pilot(client, ["haiku"], ["neutral"], 3, 100.0, self.sandbox, run_id="later4xx", out_dir=d, plan_dir=d)
+        eps = [json.loads(l) for l in (d / "later4xx.jsonl").read_text(encoding="utf-8").splitlines()
+               if '"record_type": "episode"' in l]
+        self.assertEqual([e["end_reason"] for e in eps], ["submit", "api_error", "api_error"])
+
+    def test_plan_is_block_randomised_and_logged(self):
+        models, conds = ["sonnet", "haiku"], list(agent.CONDITIONS)
+        p1, p2 = agent.plan(models, conds, 20, seed=1), agent.plan(models, conds, 20, seed=1)
+        self.assertEqual(p1, p2)                                        # reproductible a seed egale
+        self.assertNotEqual(p1, agent.plan(models, conds, 20, seed=2))  # depend de la seed
+        self.assertEqual(len(p1), 120)
+        cells = {(m, c) for m in models for c in conds}
+        for k in range(20):                                             # chaque bloc : chaque cellule une fois
+            block = p1[k * 6:(k + 1) * 6]
+            self.assertEqual({(a, c) for _, a, c in block}, cells)
+            self.assertTrue(all(rep == k + 1 for rep, _, _ in block))
+        canonical = [(rep, a, c) for rep in range(1, 21) for a in models for c in conds]
+        self.assertNotEqual(p1, canonical)
+        d = Path(self.tmp.name) / "planlog"
+        d.mkdir()
+        client = MockClient([tool("submit", message="done")] * 6, model="claude-haiku-4-5-20251001")
+        agent.run_pilot(client, ["haiku"], conds, 2, 100.0, self.sandbox, run_id="planlog", out_dir=d, plan_dir=d,
+                        seed=7, blind=True)
+        logged = json.loads((d / "planlog.plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(logged["seed"], 7)
+        self.assertEqual([(e["rep"], e["model_alias"], e["condition"]) for e in logged["plan"]],
+                         agent.plan(["haiku"], conds, 2, seed=7))
+        eps = [json.loads(l) for l in (d / "planlog.jsonl").read_text(encoding="utf-8").splitlines()
+               if '"record_type": "episode"' in l]
+        self.assertEqual([e["condition"] for e in eps], [e["condition"] for e in logged["plan"]])
 
     def test_max_turns(self):
         ep, _, _ = self._run([tool("list_files")] * agent.MAX_TURNS)

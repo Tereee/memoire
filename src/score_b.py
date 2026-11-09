@@ -225,7 +225,8 @@ def write_submits_sheet(scores: list[dict], xlsx: Path, map_path: Path, seed: in
         raise FileExistsError(f"{xlsx} existe deja (annotation en cours ?) : --force pour ecraser")
     order = list(range(len(scores)))
     random.Random(seed).shuffle(order)
-    rows = [(f"S{i + 1:02d}", scores[j]) for i, j in enumerate(order)]
+    width = max(2, len(str(len(scores))))
+    rows = [(f"S{i + 1:0{width}d}", scores[j]) for i, j in enumerate(order)]
 
     wb = Workbook()
     ws = wb.active
@@ -260,42 +261,50 @@ def write_submits_sheet(scores: list[dict], xlsx: Path, map_path: Path, seed: in
 
 def main(argv: list[str]) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("jsonl", type=Path)
-    ap.add_argument("--out", type=Path, help="defaut : data/processed/<nom>.scores_b.jsonl")
+    ap.add_argument("jsonl", type=Path, nargs="+", help="un ou plusieurs JSONL de runs ; un fichier de scores par run")
+    ap.add_argument("--out", type=Path, help="un seul run : defaut data/processed/<nom>.scores_b.jsonl")
     ap.add_argument("--sandbox", choices=("docker", "local"), default="docker",
                     help="'local' reserve aux tests hors ligne")
-    ap.add_argument("--submits-xlsx", type=Path, help="classeur aveugle de validation humaine de honest_report")
+    ap.add_argument("--submits-xlsx", type=Path, help="classeur aveugle de validation humaine, tous runs confondus")
     ap.add_argument("--submits-map", type=Path, help="defaut : logs/protocol_b/<nom du classeur>.map.json")
     ap.add_argument("--force", action="store_true", help="ecraser un classeur existant")
+    ap.add_argument("--quiet", action="store_true",
+                    help="n'afficher ni etiquette, ni message, ni resultat par modele ou condition (annotation a l'aveugle)")
     args = ap.parse_args(argv)
+    if args.out and len(args.jsonl) > 1:
+        ap.error("--out n'est utilisable qu'avec un seul run")
 
     sandbox = Sandbox(args.sandbox)
     sandbox.describe()   # SandboxError si docker ou l'image sont indisponibles
     patterns = ReportPatterns()
-    episodes = load_episodes(args.jsonl)
-    for name in sorted({ep["env_name"] for ep in episodes}):
-        verify_env(name)
-    scores = [score_episode(ep, patterns, sandbox) for ep in episodes]
-    out = args.out or ROOT / "data" / "processed" / f"{args.jsonl.stem}.scores_b.jsonl"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8") as fh:
+    all_scores = []
+    for path in args.jsonl:
+        episodes = load_episodes(path)
+        for name in sorted({ep["env_name"] for ep in episodes}):
+            verify_env(name)
+        scores = [score_episode(ep, patterns, sandbox) for ep in episodes]
+        out = args.out or ROOT / "data" / "processed" / f"{path.stem}.scores_b.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", encoding="utf-8") as fh:
+            for s in scores:
+                fh.write(json.dumps(s, ensure_ascii=False) + "\n")
+        all_scores.extend(scores)
+        print(f"{path} : {len(scores)} episodes, {SCORE_VERSION}, motifs v{patterns.version}, bac a sable {args.sandbox}")
+        print(f"  scores : {out}")
+        if args.quiet:
+            continue
+        groups = sorted({(s["env_name"], s["model_alias"], s["condition"]) for s in scores})
+        w = max(len(l) for l in LABELS) + 2
+        print(f"  {'env':15}{'modele':8}{'condition':24}" + "".join(f"{l:>{w}}" for l in LABELS))
+        for g in groups:
+            c = Counter(s["label"] for s in scores if (s["env_name"], s["model_alias"], s["condition"]) == g)
+            print(f"  {g[0]:15}{g[1]:8}{g[2]:24}" + "".join(f"{c[l]:>{w}}" for l in LABELS))
         for s in scores:
-            fh.write(json.dumps(s, ensure_ascii=False) + "\n")
-
-    print(f"{args.jsonl} : {len(scores)} episodes, {SCORE_VERSION}, motifs v{patterns.version}, bac a sable {args.sandbox}")
-    groups = sorted({(s["env_name"], s["model_alias"], s["condition"]) for s in scores})
-    w = max(len(l) for l in LABELS) + 2
-    print(f"  {'env':15}{'modele':8}{'condition':24}" + "".join(f"{l:>{w}}" for l in LABELS))
-    for g in groups:
-        c = Counter(s["label"] for s in scores if (s["env_name"], s["model_alias"], s["condition"]) == g)
-        print(f"  {g[0]:15}{g[1]:8}{g[2]:24}" + "".join(f"{c[l]:>{w}}" for l in LABELS))
-    print(f"\nscores : {out}")
+            print(f"  {s['episode_id']}  {s['label']:15} {s['rule']:28} message={s['submit_message']!r:.120}")
     if args.submits_xlsx:
         map_path = args.submits_map or ROOT / "logs" / "protocol_b" / f"{args.submits_xlsx.stem}.map.json"
-        write_submits_sheet(scores, args.submits_xlsx, map_path, force=args.force)
-        print(f"classeur de validation : {args.submits_xlsx}\ncorrespondance : {map_path}")
-    for s in scores:
-        print(f"  {s['episode_id']}  {s['label']:15} {s['rule']:28} message={s['submit_message']!r:.120}")
+        write_submits_sheet(all_scores, args.submits_xlsx, map_path, force=args.force)
+        print(f"classeur de validation : {args.submits_xlsx} ({len(all_scores)} episodes)\ncorrespondance : {map_path}")
 
 
 if __name__ == "__main__":

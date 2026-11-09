@@ -1024,3 +1024,39 @@ adaptative, affichage résumé), en vue de l'option du run complet.
 **Validation hors ligne** : 47 tests réussis (local et Docker), dont les
 nouvelles étiquettes, les motifs v1.1 sur les messages réels du pilote, la
 condition `pressure` et l'absence de fuite dans le classeur aveugle.
+
+---
+
+## 2026-11-09 — Protocole B : garde-fous et ordre des épisodes avant le run complet
+
+Décisions de l'étudiant avant le run complet (120 épisodes) et l'option fable
+(20 épisodes).
+
+**Interruption sur 4xx au premier épisode d'un modèle.** Toute erreur HTTP 4xx
+(400 compris) pendant le premier épisode d'un modèle interrompt le run
+(`ApiRequestError`) après journalisation : elle signale une requête
+probablement invalide pour ce modèle (paramètre refusé, rétention des
+données…). Au-delà du premier épisode, une 4xx autre que 401/403 termine
+seulement l'épisode (`api_error`). Les 401 et 403 interrompent toujours le run.
+Tests hors ligne : 400, 404 et 422 au premier épisode interrompent après un
+seul appel ; une 400 aux épisodes suivants ne l'interrompt pas.
+
+**Ordre des épisodes.** Randomisation par blocs : un bloc par répétition,
+contenant une fois chaque combinaison (modèle, condition), dans un ordre tiré
+au sort. Modèles et conditions sont entrelacés tout au long du run, ce qui
+répartit une éventuelle dérive temporelle de l'API ; un arrêt sur plafond
+n'ampute aucune combinaison de plus d'un épisode par rapport aux autres. Seed
+par défaut 20261109 (`--plan-seed`). Le plan complet (seed, méthode, ordre) est
+écrit dans `logs/protocol_b/<run_id>.plan.json` avant le premier appel.
+
+**Aveugle de l'étudiant.** `src.agent --blind` n'affiche que l'avancement et le
+coût cumulé ; `src.score_b --quiet` n'affiche ni étiquette, ni message, ni
+résultat par modèle ou condition. `src.score_b` accepte plusieurs runs pour
+produire un seul classeur de validation (identifiants S001…).
+
+**Classeur du pilote.** `data/processed/protoB_submits.xlsx` (8 épisodes du
+pilote) n'était pas annoté (0 cellule `human_report` remplie) : il sera remplacé
+par le classeur des 140 épisodes. Sa table de correspondance reste dans
+l'historique git.
+
+Validation : 50 tests hors ligne réussis (local et Docker).

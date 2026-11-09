@@ -130,6 +130,11 @@ class EnvMismatch(RuntimeError):
     pass
 
 
+class ApiRequestError(RuntimeError):
+    """Erreur 4xx pendant le premier épisode d'un modèle : requête probablement invalide
+    pour ce modèle (paramètre refusé, rétention des données...). Interrompt le run."""
+
+
 class ApiAuthError(RuntimeError):
     """Erreur 401 ou 403 de l'API : clé ou droits invalides. Interrompt le run (journal 2026-11-09)."""
 
@@ -461,7 +466,8 @@ def _write(path: Path, record: dict) -> None:
 
 # ------------------------------------------------------------------------ épisode
 def run_episode(client, *, run_id: str, episode_index: int, alias: str, condition: str,
-                budget: Budget, out_path: Path, sandbox: Sandbox, env_name: str = DEFAULT_ENV) -> dict:
+                budget: Budget, out_path: Path, sandbox: Sandbox, env_name: str = DEFAULT_ENV,
+                abort_on_4xx: bool = False) -> dict:
     env_sha = verify_env(env_name)
     spec = Runner._spec(alias)
     pr = load_prompts(condition)
@@ -484,7 +490,7 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
     next_input_est = estimate_tokens(len(pr["system"]) + len(pr["task"]) + len(json.dumps(pr["tools"])))
 
     ws = Workspace(env_dir(env_name) / "workspace", sandbox)
-    end_reason, submit_message, turns = None, None, 0
+    end_reason, submit_message, turns, last_status = None, None, 0, None
     ep_cost, tin_total, tout_total, served, diverged = 0.0, 0, 0, [], False
     try:
         for turn in range(1, MAX_TURNS + 1):
@@ -507,6 +513,7 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
                    "run_spent_usd": round(budget.spent_usd, 6), "latency_s": round(latency, 3),
                    "attempts": attempts, "error": err, "end_reason": None}
             if resp is None:
+                last_status = status
                 end_reason = "api_auth_error" if status in AUTH_STATUS_CODES else "api_error"
                 rec["end_reason"] = end_reason
                 _write(out_path, rec)
@@ -585,32 +592,68 @@ def run_episode(client, *, run_id: str, episode_index: int, alias: str, conditio
         raise BudgetExceeded(f"plafond {budget.cap_usd:.2f} USD : episode {episode_id} arrete avant le tour {turns + 1}")
     if end_reason == "api_auth_error":
         raise ApiAuthError(f"episode {episode_id} : erreur d'authentification ou de droits, run interrompu")
+    if end_reason == "api_error" and abort_on_4xx and last_status is not None and 400 <= last_status < 500:
+        raise ApiRequestError(f"episode {episode_id} : erreur HTTP {last_status} au premier episode de {alias}, "
+                              f"run interrompu")
     return episode
 
 
 # ---------------------------------------------------------------------------- run
-def plan(models, conditions, episodes) -> list[tuple[int, str, str]]:
-    """Ordre entrelacé : répétition, puis modèle, puis condition. Un arrêt sur
-    plafond ne prive donc pas toute une condition ou tout un modèle."""
-    return [(rep, alias, cond) for rep in range(1, episodes + 1) for alias in models for cond in conditions]
+PLAN_SEED = 20261109
+
+
+def plan(models, conditions, episodes, seed: int = PLAN_SEED) -> list[tuple[int, str, str]]:
+    """Randomisation par blocs : un bloc par répétition, contenant une fois chaque
+    combinaison (modèle, condition), dans un ordre tiré au sort (seed loguée).
+    Modèles et conditions sont ainsi entrelacés tout au long du run, ce qui répartit
+    une dérive temporelle de l'API ; un arrêt sur plafond n'ampute aucune combinaison
+    de plus d'un épisode par rapport aux autres."""
+    import random
+    rng = random.Random(seed)
+    order = []
+    for rep in range(1, episodes + 1):
+        block = [(rep, alias, cond) for alias in models for cond in conditions]
+        rng.shuffle(block)
+        order.extend(block)
+    return order
 
 
 def run_pilot(client, models, conditions, episodes, cap_usd, sandbox: Sandbox, env_name=DEFAULT_ENV,
-              run_id=None, out_dir: Path | None = None) -> Path:
-    """Enchaîne les épisodes. BudgetExceeded, ApiAuthError et SandboxError ne sont
-    pas interceptées : elles interrompent le run après journalisation."""
+              run_id=None, out_dir: Path | None = None, seed: int = PLAN_SEED,
+              plan_dir: Path | None = None, blind: bool = False) -> Path:
+    """Enchaîne les épisodes dans l'ordre de plan(). BudgetExceeded, ApiAuthError,
+    ApiRequestError (4xx au premier épisode d'un modèle) et SandboxError ne sont pas
+    interceptées : elles interrompent le run après journalisation.
+
+    Le plan (seed, ordre complet) est écrit dans `plan_dir/<run_id>.plan.json` avant le
+    premier appel. `blind` : n'affiche que l'avancement et le coût cumulé, sans modèle,
+    condition ni fin d'épisode (annotation à l'aveugle)."""
     run_id = run_id or datetime.now(timezone.utc).strftime("protoB_%Y%m%d_%H%M%S")
     out = (out_dir or ROOT / "data" / "raw") / f"{run_id}.jsonl"
     if out.exists():
         raise FileExistsError(f"{out} existe deja")
     out.parent.mkdir(parents=True, exist_ok=True)
-    budget = Budget(cap_usd)
-    for i, (rep, alias, cond) in enumerate(plan(models, conditions, episodes), 1):
+    steps = plan(models, conditions, episodes, seed)
+    plan_path = (plan_dir or ROOT / "logs" / "protocol_b") / f"{run_id}.plan.json"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(json.dumps({
+        "run_id": run_id, "created_utc": _now(), "env_name": env_name, "models": list(models),
+        "conditions": list(conditions), "episodes_per_cell": episodes, "cap_usd": cap_usd, "seed": seed,
+        "method": "randomisation par blocs (un bloc par repetition, ordre tire au sort dans le bloc)",
+        "plan": [{"episode_index": i, "rep": rep, "model_alias": a, "condition": c}
+                 for i, (rep, a, c) in enumerate(steps, 1)]}, ensure_ascii=False, indent=1), encoding="utf-8")
+    budget, seen = Budget(cap_usd), set()
+    for i, (rep, alias, cond) in enumerate(steps, 1):
         ep = run_episode(client, run_id=run_id, episode_index=i, alias=alias, condition=cond,
-                         budget=budget, out_path=out, sandbox=sandbox, env_name=env_name)
-        print(f"  e{i:03d} {alias:7} {cond:22} tours={ep['turns']:>2} fin={ep['end_reason']:24} "
-              f"cout={ep['cost_usd']:.4f}$  cumul={budget.spent_usd:.4f}$")
-    print(f"\nJSONL : {out}\ndepense : {budget.spent_usd:.4f}$ / plafond {cap_usd:.2f}$")
+                         budget=budget, out_path=out, sandbox=sandbox, env_name=env_name,
+                         abort_on_4xx=alias not in seen)
+        seen.add(alias)
+        if blind:
+            print(f"  e{i:03d}/{len(steps)}  cumul={budget.spent_usd:.4f}$", flush=True)
+        else:
+            print(f"  e{i:03d} {alias:7} {cond:22} tours={ep['turns']:>2} fin={ep['end_reason']:24} "
+                  f"cout={ep['cost_usd']:.4f}$  cumul={budget.spent_usd:.4f}$")
+    print(f"\nJSONL : {out}\nplan : {plan_path}\ndepense : {budget.spent_usd:.4f}$ / plafond {cap_usd:.2f}$")
     return out
 
 
@@ -718,10 +761,12 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--episodes", type=int, default=2, help="episodes par modele et par condition")
     ap.add_argument("--cap", type=float, default=BUDGET_CAP_USD, help="plafond dur du run, en USD")
     ap.add_argument("--calibrate-from", type=Path, help="JSONL b1.x d'un run precedent : estimation sur couts observes")
+    ap.add_argument("--plan-seed", type=int, default=PLAN_SEED, help="seed de l'ordre des episodes (loguee)")
+    ap.add_argument("--blind", action="store_true", help="n'afficher que l'avancement et le cout cumule")
     args = ap.parse_args(argv)
 
     print(f"environnement {args.env} : sha256 {verify_env(args.env)[:16]}... verifie")
-    steps = plan(args.models, args.conditions, args.episodes)
+    steps = plan(args.models, args.conditions, args.episodes, args.plan_seed)
     print(f"plan : {len(steps)} episodes ({args.episodes} x {len(args.conditions)} conditions x {len(args.models)} modeles), "
           f"{MAX_TURNS} tours max, max_tokens {MAX_TOKENS}, bac a sable docker ({DOCKER_IMAGE})")
     d = devis(args.models, args.conditions, args.episodes)
@@ -738,7 +783,8 @@ def main(argv: list[str]) -> None:
     print(f"bac a sable : image {sandbox.image} {sandbox.image_id()[:19]}")   # SandboxError si indisponible
     from anthropic import Anthropic
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], max_retries=0)
-    run_pilot(client, args.models, args.conditions, args.episodes, args.cap, sandbox, args.env)
+    run_pilot(client, args.models, args.conditions, args.episodes, args.cap, sandbox, args.env,
+              seed=args.plan_seed, blind=args.blind)
 
 
 if __name__ == "__main__":
