@@ -1,0 +1,137 @@
+{
+ "run_id": "protoB_20261109_144554",
+ "created_utc": "2026-11-09T14:45:54.397459+00:00",
+ "env_name": "impossible_v2",
+ "models": [
+  "fable"
+ ],
+ "conditions": [
+  "pressure"
+ ],
+ "episodes_per_cell": 20,
+ "cap_usd": 15.0,
+ "seed": 20261109,
+ "method": "randomisation par blocs (un bloc par repetition, ordre tire au sort dans le bloc)",
+ "plan": [
+  {
+   "episode_index": 1,
+   "rep": 1,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 2,
+   "rep": 2,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 3,
+   "rep": 3,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 4,
+   "rep": 4,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 5,
+   "rep": 5,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 6,
+   "rep": 6,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 7,
+   "rep": 7,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 8,
+   "rep": 8,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 9,
+   "rep": 9,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 10,
+   "rep": 10,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 11,
+   "rep": 11,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 12,
+   "rep": 12,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 13,
+   "rep": 13,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 14,
+   "rep": 14,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 15,
+   "rep": 15,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 16,
+   "rep": 16,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 17,
+   "rep": 17,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 18,
+   "rep": 18,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 19,
+   "rep": 19,
+   "model_alias": "fable",
+   "condition": "pressure"
+  },
+  {
+   "episode_index": 20,
+   "rep": 20,
+   "model_alias": "fable",
+   "condition": "pressure"
+  }
+ ]
+}

@@ -1060,3 +1060,50 @@ par le classeur des 140 épisodes. Sa table de correspondance reste dans
 l'historique git.
 
 Validation : 50 tests hors ligne réussis (local et Docker).
+
+---
+
+## 2026-11-09 — Protocole B : run complet et option fable, collectés et scellés (rapport technique)
+
+**Entrée volontairement technique.** L'étudiant annote les messages de submit à
+l'aveugle : aucune étiquette, aucun message, aucun résultat par modèle ou par
+condition n'est consigné ici avant la fin de son annotation.
+
+Paramètres communs : `impossible_v2`, schéma `b1.2`, scoring `b_score1.2`,
+motifs v1.1, bac à sable Docker `memoire/sandbox-b:1`
+(`sha256:17da5639cfb37c7561754feaaadd1a65565a7411871d47b433e06f3fed61a8ca`),
+ordre randomisé par blocs (seed 20261109), interruption sur 4xx au premier
+épisode d'un modèle et sur 401/403, sorties console en mode aveugle. Lancés
+depuis le poste Windows.
+
+| run | contenu | épisodes | tours | coût réel | plafond | SHA-256 du JSONL |
+|---|---|---|---|---|---|---|
+| `protoB_20261109_133456` | 3 conditions × sonnet, haiku × 20 | 120 / 120 | 1 031 | 5,9685 USD | 22 USD | `ed1eabfce2ea66fd61593ba885b44220f68fcbfedc3f16a10b8e6ba6b1d383e5` |
+| `protoB_20261109_144554` | fable × `pressure` × 20 | 20 / 20 | 130 | 2,2848 USD | 15 USD | `61246d8402599d8b6733e6ebc6950272d5e1ef5990e2e647e8661d67de6fb9e4` |
+
+Plans : `logs/protocol_b/protoB_20261109_133456.plan.json` et
+`logs/protocol_b/protoB_20261109_144554.plan.json` ; l'ordre réel des
+épisodes est conforme au plan dans les deux runs.
+
+Coût total : 8,2533 USD, pour un devis calibré de 5,95 + 4,51 = 10,46 USD.
+
+**Infrastructure.**
+- Aucune erreur d'API, aucune interruption de run, aucune panne Docker.
+- Aucune divergence de modèle (`model_served` conforme sur les 1 161 tours).
+- `run_tests` : 312 exécutions dans le conteneur, aucun délai dépassé, aucune
+  sortie vide ; aucun appel d'outil en erreur.
+- Un épisode du run complet s'est terminé par `max_tokens` : un tour a atteint
+  la limite de 4 096 tokens de sortie ; l'outil éventuel de ce tour n'a pas été
+  exécuté.
+- Scoring (Docker) : 280 exécutions de tests (visibles et cachés), aucun délai
+  dépassé, aucune sortie illisible, aucun nombre de tests inattendu.
+
+**Classeur de validation** `data/processed/protoB_submits.xlsx` : 140 lignes
+(S001 à S140), message de submit intégral, `human_report` vide ; aucun modèle,
+condition, étiquette ni identifiant d'épisode. Table de correspondance
+`logs/protocol_b/protoB_submits.map.json` (seed 20261109). Il remplace le
+classeur du pilote, non annoté. Les fichiers de scores
+(`data/processed/<run>.scores_b.jsonl`) ne sont pas versionnés.
+
+**Dépense cumulée du projet** : environ 43,7 USD (protocole A et complément
+34,80 ; pilotes et tests 0,6 ; protocole B 8,25).
